@@ -65,7 +65,7 @@ containers:
 ### 4. Run the E2E test
 
 ```bash
-kubectl apply -f k8s/egress-test.yaml
+kubectl apply -f tests/e2e/manifests/egress-test.yaml
 kubectl -n egress-test wait --for=jsonpath='{.status.phase}'=Succeeded pod/egress-test --timeout=120s
 kubectl -n egress-test logs egress-test -c curl-client
 kubectl delete namespace egress-test

@@ -222,4 +222,4 @@ On SIGINT or SIGTERM:
 
 - **71 unit tests** — allowlist (13), config (14), header_rewrite (6), secrets (9), proxy (29)
 - **11 integration tests** — denied 403, CONNECT 405, missing host 400, metrics, healthz (ready/not-ready), 404, header injection, allowed forward, missing secret 500, timeout 504
-- **E2E** — `k8s/egress-test.yaml` runs on a kind cluster with a real OpenAI API call (dummy key → 401)
+- **E2E** — `tests/e2e/manifests/egress-test.yaml` runs on a kind cluster with a real OpenAI API call (dummy key → 401)

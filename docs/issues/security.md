@@ -38,7 +38,7 @@ Impact:
 Where this shows up:
 - `README.md` (initContainer iptables example)
 - `docs/architecture.md` (transparent redirect explanation)
-- `k8s/egress-test.yaml` (iptables rules used in E2E)
+- `tests/e2e/manifests/egress-test.yaml` (iptables rules used in E2E)
 - `scripts/iptables-init.sh` (idempotent init script)
 - `Dockerfile` (Docker target `iptables-init` builds the init image)
 
@@ -69,7 +69,7 @@ Option C: Use an external egress gateway / service mesh that already enforces L7
 
 TODO:
 - [x] Decide and document the supported enforcement model (Option A) and what is *out of scope*.
-- [x] Update `README.md` and `k8s/egress-test.yaml` to include egress-blocking filter rules (Option A).
+- [x] Update `README.md` and `tests/e2e/manifests/egress-test.yaml` to include egress-blocking filter rules (Option A).
 - [x] Tighten the filter rules to also block non-DNS UDP (QUIC/UDP 443 bypass); allowlist only what the pod actually needs.
 - [x] Ensure examples/docs set application containers to a UID != 1337 (BotBox UID).
 - [ ] Consider `-m cgroup` (where available) instead of UID matching for stronger separation.
@@ -147,7 +147,7 @@ Where this shows up:
 - `src/secrets.rs` (symlink + size-cap handling, `check_required_secrets()`)
 - `src/config.rs` (`required_secret_refs()` extracts all `secret_ref` names from config)
 - `src/main.rs` (readiness gated on required secrets; periodic re-check updates `/healthz`)
-- `k8s/egress-test.yaml` (uses a Secret volume mount)
+- `tests/e2e/manifests/egress-test.yaml` (uses a Secret volume mount)
 
 Recommended fix:
 - Allow symlinks **only when they resolve within** `secrets_dir` (prevent traversal) so K8s mounts work.
@@ -311,7 +311,7 @@ Impact:
 - Increases the chance real keys are accidentally committed later (people copy/paste).
 
 Where this shows up:
-- `k8s/egress-test.yaml`
+- `tests/e2e/manifests/egress-test.yaml`
 - `tests/integration_test.rs`
 
 TODO:
