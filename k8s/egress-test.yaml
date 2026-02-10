@@ -1,0 +1,137 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: egress-test
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: botbox-secrets
+  namespace: egress-test
+type: Opaque
+stringData:
+  openai-api-key: "REPLACE-ME-NOT-A-REAL-KEY"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: botbox-config
+  namespace: egress-test
+data:
+  config.yaml: |
+    listen_addr: "127.0.0.1"
+    listen_port: 8080
+    metrics_port: 9090
+    secrets_dir: "/var/run/secrets/botbox"
+    max_connections: 1024
+
+    egress_policy:
+      default_action: deny
+      rules:
+        - host: api.openai.com
+          action: allow
+          header_rewrites:
+            - name: Authorization
+              value: "Bearer {value}"
+              secret_ref: openai-api-key
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: egress-test
+  namespace: egress-test
+spec:
+  restartPolicy: Never
+  initContainers:
+    - name: iptables-init
+      image: alpine:3.19
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          apk add --no-cache iptables
+
+          # --- NAT rules: redirect app HTTP to BotBox ---
+          iptables -t nat -N EGRESS_REDIRECT
+          iptables -t nat -A EGRESS_REDIRECT -o lo -j RETURN
+          iptables -t nat -A EGRESS_REDIRECT -m owner --uid-owner 1337 -j RETURN
+          iptables -t nat -A EGRESS_REDIRECT -p tcp --dport 80 -j REDIRECT --to-port 8080
+          iptables -t nat -I OUTPUT 1 -p tcp -j EGRESS_REDIRECT
+
+          # --- Filter rules: block direct outbound from non-BotBox processes ---
+          iptables -N EGRESS_FILTER
+          iptables -A EGRESS_FILTER -o lo -j RETURN
+          iptables -A EGRESS_FILTER -m owner --uid-owner 1337 -j RETURN
+          iptables -A EGRESS_FILTER -p udp --dport 53 -j RETURN
+          iptables -A EGRESS_FILTER -p tcp --dport 53 -j RETURN
+          iptables -A EGRESS_FILTER -p tcp -j DROP
+          iptables -A EGRESS_FILTER -p udp -j DROP
+          iptables -I OUTPUT 1 -j EGRESS_FILTER
+
+          echo "iptables rules installed:"
+          iptables -t nat -L EGRESS_REDIRECT -v -n
+          iptables -L EGRESS_FILTER -v -n
+      securityContext:
+        capabilities:
+          add: [NET_ADMIN]
+        runAsUser: 0
+        runAsNonRoot: false
+    - name: botbox
+      image: botbox:test
+      imagePullPolicy: Never
+      restartPolicy: Always
+      args:
+        - "--config"
+        - "/etc/botbox/config.yaml"
+      securityContext:
+        runAsUser: 1337
+        runAsNonRoot: true
+      ports:
+        - containerPort: 8080
+          name: proxy
+        - containerPort: 9090
+          name: metrics
+      readinessProbe:
+        httpGet:
+          path: /healthz
+          port: 9090
+        initialDelaySeconds: 1
+        periodSeconds: 2
+      volumeMounts:
+        - name: secrets
+          mountPath: /var/run/secrets/botbox
+          readOnly: true
+        - name: config
+          mountPath: /etc/botbox
+          readOnly: true
+  containers:
+    - name: curl-client
+      image: curlimages/curl:latest
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Waiting for botbox to be ready..."
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:9090/healthz > /dev/null 2>&1; then
+              echo "Proxy is ready!"
+              break
+            fi
+            echo "Attempt $i: proxy not ready, sleeping 2s..."
+            sleep 2
+          done
+          echo "--- Sending request through proxy ---"
+          curl -v http://api.openai.com/v1/models 2>&1
+          EXIT_CODE=$?
+          echo ""
+          echo "--- curl exit code: $EXIT_CODE ---"
+          echo "--- Done ---"
+  volumes:
+    - name: secrets
+      secret:
+        secretName: botbox-secrets
+    - name: config
+      configMap:
+        name: botbox-config

@@ -1,0 +1,54 @@
+[package]
+name = "botbox"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP server/client
+hyper = { version = "1", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "client-legacy", "http1"] }
+http-body-util = "0.1"
+http = "1"
+
+# TLS (outbound)
+hyper-rustls = { version = "0.27", features = ["http1", "ring", "webpki-tokio"] }
+rustls = "0.23"
+webpki-roots = "0.26"
+
+# Config
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+# Metrics
+prometheus = { version = "0.14", features = ["process"] }
+
+# Secret watching
+notify = "8"
+
+# Lock-free sharing
+arc-swap = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+
+# Secret zeroization
+zeroize = "1"
+
+[dev-dependencies]
+wiremock = "0.6"
+tempfile = "3"
+reqwest = { version = "0.12" }

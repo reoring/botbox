@@ -1,0 +1,25 @@
+listen_addr: "127.0.0.1"
+listen_port: 8080
+metrics_port: 9090
+secrets_dir: "/var/run/secrets/botbox"
+max_connections: 1024
+allow_non_loopback: false
+
+egress_policy:
+  default_action: deny
+  rules:
+    - host: api.openai.com
+      action: allow
+      header_rewrites:
+        - name: Authorization
+          value: "Bearer {value}"
+          secret_ref: openai-api-key
+
+    - host: api.anthropic.com
+      action: allow
+      header_rewrites:
+        - name: x-api-key
+          value: "{value}"
+          secret_ref: anthropic-api-key
+        - name: anthropic-version
+          value: "2023-06-01"
