@@ -21,25 +21,67 @@ Running an autonomous AI agent (LLM-based coding agent, tool-use agent, etc.) in
 - **Zero app changes required.** iptables transparent redirect means the agent doesn't need proxy settings — it just makes normal HTTP requests and BotBox handles the rest.
 - **Auditable.** Every request is logged with structured tracing. You can see exactly what your agent tried to reach and whether it was allowed or denied.
 
-```
-┌─── Pod ──────────────────────────────────────┐
-│                                              │
-│  ┌──────────┐    iptables    ┌──────────┐   │
-│  │ AI Agent │ ──────────────▶│  BotBox  │   │
-│  │ (no keys)│  transparent   │ (sidecar)│   │
-│  └──────────┘   redirect     └────┬─────┘   │
-│                                   │         │
-│                    ┌──────────────┘         │
-│                    │ allowlist check         │
-│                    │ + credential injection  │
-└────────────────────┼────────────────────────┘
-                     │
-                     ▼
-              Permitted APIs only
-           (api.openai.com, etc.)
+```mermaid
+flowchart LR
+    subgraph Pod
+        Agent["🤖 AI Agent<br/><i>no credentials</i>"]
+        IPT[/"iptables<br/>transparent<br/>redirect"/]
+        BotBox["🔒 BotBox<br/><i>sidecar</i>"]
+    end
+
+    Agent -- "curl http://api.openai.com" --> IPT
+    IPT -- ":80 → :8080" --> BotBox
+
+    BotBox -- "✅ Allowed + TLS + Key injected" --> API["api.openai.com"]
+    BotBox -. "❌ Denied → 403" .-> Agent
+
+    style Agent fill:#fef3c7,stroke:#d97706
+    style BotBox fill:#dbeafe,stroke:#2563eb
+    style API fill:#d1fae5,stroke:#059669
 ```
 
 This makes BotBox a natural fit for any scenario where you need to **run untrusted or semi-trusted code** with controlled, auditable network access.
+
+## How it Works
+
+### Request Processing
+
+```mermaid
+flowchart TD
+    A["Incoming HTTP request"] --> B{"Host in<br/>allowlist?"}
+    B -- "No" --> C["403 Forbidden"]
+    B -- "Yes" --> D["Strip hop-by-hop headers"]
+    D --> E["Set Host header for upstream"]
+    E --> F{"Header rewrite<br/>rules?"}
+    F -- "Yes" --> G["Delete existing header<br/><i>prevent smuggling</i>"]
+    G --> H["Inject secret from<br/>K8s Secret mount"]
+    H --> I["TLS origination<br/><i>http → https</i>"]
+    F -- "No" --> I
+    I --> J["Stream response back"]
+
+    style C fill:#fee2e2,stroke:#dc2626
+    style J fill:#d1fae5,stroke:#059669
+```
+
+### iptables Network Rules
+
+```mermaid
+flowchart TD
+    OUT["Outbound packet<br/><i>OUTPUT chain</i>"] --> FIL{"EGRESS_FILTER"}
+
+    FIL -- "loopback" --> PASS1["✅ RETURN"]
+    FIL -- "UID 1337<br/><i>BotBox itself</i>" --> PASS2["✅ RETURN"]
+    FIL -- "DNS (53)" --> PASS3["✅ RETURN"]
+    FIL -- "other TCP/UDP" --> DROP["🚫 DROP"]
+
+    OUT --> NAT{"EGRESS_REDIRECT<br/><i>NAT</i>"}
+    NAT -- "loopback" --> SKIP1["RETURN"]
+    NAT -- "UID 1337" --> SKIP2["RETURN"]
+    NAT -- "TCP :80" --> REDIR[":80 → :8080<br/><i>REDIRECT to BotBox</i>"]
+
+    style DROP fill:#fee2e2,stroke:#dc2626
+    style REDIR fill:#dbeafe,stroke:#2563eb
+```
 
 ## Quickstart
 
