@@ -1,6 +1,37 @@
 # BotBox
 
-A Kubernetes sidecar that transparently adds API keys to outbound requests. Your app calls `curl http://api.openai.com/v1/models` — BotBox intercepts it via iptables, injects the `Authorization` header from a Kubernetes Secret, and forwards over HTTPS. Your app never sees the real key.
+**Sandbox any container's network — especially AI agents.**
+
+BotBox is a Kubernetes sidecar proxy that sits between your container and the internet. It intercepts all outbound traffic via iptables, enforces a deny-by-default allowlist, and injects API keys at the network boundary — so the container itself never holds credentials and can only reach hosts you explicitly permit.
+
+### AI Agent Containment
+
+Running an autonomous AI agent (LLM-based coding agent, tool-use agent, etc.) in a container? BotBox gives you a hard network boundary:
+
+- **The agent can only reach hosts you allow.** Deny-by-default policy blocks all other egress — no data exfiltration, no unauthorized API calls.
+- **The agent never sees real API keys.** Credentials are stored in Kubernetes Secrets and injected by BotBox at the network layer. Even if the agent dumps its own environment or memory, there are no keys to leak.
+- **Zero app changes required.** iptables transparent redirect means the agent doesn't need proxy settings — it just makes normal HTTP requests and BotBox handles the rest.
+- **Auditable.** Every request is logged with structured tracing. You can see exactly what your agent tried to reach and whether it was allowed or denied.
+
+```
+┌─── Pod ──────────────────────────────────────┐
+│                                              │
+│  ┌──────────┐    iptables    ┌──────────┐   │
+│  │ AI Agent │ ──────────────▶│  BotBox  │   │
+│  │ (no keys)│  transparent   │ (sidecar)│   │
+│  └──────────┘   redirect     └────┬─────┘   │
+│                                   │         │
+│                    ┌──────────────┘         │
+│                    │ allowlist check         │
+│                    │ + credential injection  │
+└────────────────────┼────────────────────────┘
+                     │
+                     ▼
+              Permitted APIs only
+           (api.openai.com, etc.)
+```
+
+This makes BotBox a natural fit for any scenario where you need to **run untrusted or semi-trusted code** with controlled, auditable network access.
 
 ## Quickstart
 
