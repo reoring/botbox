@@ -108,7 +108,9 @@ impl Config {
     }
 
     pub fn secrets_dir(&self) -> &str {
-        self.secrets_dir.as_deref().unwrap_or("/var/run/secrets/botbox")
+        self.secrets_dir
+            .as_deref()
+            .unwrap_or("/var/run/secrets/botbox")
     }
 
     pub fn max_connections(&self) -> u32 {

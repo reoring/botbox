@@ -197,7 +197,10 @@ mod tests {
             allowed_ports: Some(vec![443, 8443]),
         }];
         let al = Allowlist::new(&rules, Action::Deny);
-        assert!(matches!(al.check("api.openai.com:8443"), Decision::Allow(_)));
+        assert!(matches!(
+            al.check("api.openai.com:8443"),
+            Decision::Allow(_)
+        ));
         assert!(matches!(al.check("api.openai.com:9999"), Decision::Deny));
     }
 
