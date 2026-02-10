@@ -2,23 +2,23 @@
 
 ## Request Flow
 
-```
-app container                    botbox sidecar                         upstream
-     |                                  |                                  |
-     |  GET /v1/models                  |                                  |
-     |  Host: api.openai.com            |                                  |
-     |--- (iptables REDIRECT :80→:8080) |                                  |
-     |                                  |                                  |
-     |  allowlist check ───────────── allow                                |
-     |  header rewrite ──────────── Authorization: Bearer sk-...           |
-     |  TLS origination ────────── HTTPS                                   |
-     |                                  |                                  |
-     |                                  |  GET /v1/models                  |
-     |                                  |  Authorization: Bearer sk-...    |
-     |                                  |──────────────────────────────────>|
-     |                                  |                           200 OK |
-     |                           200 OK |<─────────────────────────────────|
-     |<─────────────────────────────────|                                  |
+```mermaid
+sequenceDiagram
+    participant App as App Container
+    participant IPT as iptables
+    participant BotBox as BotBox Sidecar
+    participant API as Upstream API
+
+    App->>IPT: GET /v1/models<br/>Host: api.openai.com
+    IPT->>BotBox: REDIRECT :80 → :8080
+
+    Note over BotBox: Allowlist check → allow
+    Note over BotBox: Header rewrite → Authorization: Bearer sk-...
+    Note over BotBox: TLS origination → HTTPS
+
+    BotBox->>API: GET /v1/models<br/>Authorization: Bearer sk-...
+    API-->>BotBox: 200 OK (response body)
+    BotBox-->>App: 200 OK (streamed)
 ```
 
 The proxy handler executes these steps for each request:
