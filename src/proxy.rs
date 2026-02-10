@@ -582,7 +582,10 @@ mod tests {
     #[test]
     fn test_host_header_value_ipv6_non_443_port() {
         assert_eq!(host_header_value("[::1]:8443"), "[::1]:8443");
-        assert_eq!(host_header_value("[2001:db8::1]:8080"), "[2001:db8::1]:8080");
+        assert_eq!(
+            host_header_value("[2001:db8::1]:8080"),
+            "[2001:db8::1]:8080"
+        );
     }
 
     #[test]

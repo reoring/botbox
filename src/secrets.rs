@@ -53,7 +53,8 @@ pub fn load_secrets_from_dir(dir: &Path) -> Result<HashMap<String, SecretString>
     }
 
     // Canonicalize the base directory for prefix checking
-    let canonical_dir = dir.canonicalize()
+    let canonical_dir = dir
+        .canonicalize()
         .with_context(|| format!("canonicalizing secrets directory: {:?}", dir))?;
 
     let entries =
