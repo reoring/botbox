@@ -1,5 +1,9 @@
 # BotBox
 
+[![CI](https://github.com/reoring/botbox/actions/workflows/ci.yml/badge.svg)](https://github.com/reoring/botbox/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
+
 **Sandbox any container's network — especially AI agents.**
 
 BotBox is a Kubernetes sidecar proxy that sits between your container and the internet. It intercepts all outbound traffic via iptables, enforces a deny-by-default allowlist, and injects API keys at the network boundary — so the container itself never holds credentials and can only reach hosts you explicitly permit.
