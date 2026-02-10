@@ -47,21 +47,16 @@ This makes BotBox a natural fit for any scenario where you need to **run untrust
 ### Request Processing
 
 ```mermaid
-flowchart TD
-    A["Incoming HTTP request"] --> B{"Host in<br/>allowlist?"}
-    B -- "No" --> C["403 Forbidden"]
-    B -- "Yes" --> D["Strip hop-by-hop headers"]
-    D --> E["Set Host header for upstream"]
-    E --> F{"Header rewrite<br/>rules?"}
-    F -- "Yes" --> G["Delete existing header<br/><i>prevent smuggling</i>"]
-    G --> H["Inject secret from<br/>K8s Secret mount"]
-    H --> I["TLS origination<br/><i>http → https</i>"]
-    F -- "No" --> I
-    I --> J["Stream response back"]
+flowchart LR
+    A["HTTP request"] --> B{"Allowlist"}
+    B -- "deny" --> C["403"]
+    B -- "allow" --> D["Rewrite headers\n+ inject secrets"] --> E["TLS → upstream"]
 
     style C fill:#fee2e2,stroke:#dc2626
-    style J fill:#d1fae5,stroke:#059669
+    style E fill:#d1fae5,stroke:#059669
 ```
+
+See [Architecture](docs/architecture.md) for the full request processing pipeline.
 
 ### iptables Network Rules
 
