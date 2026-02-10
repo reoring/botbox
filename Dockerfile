@@ -14,6 +14,14 @@ RUN rm -rf src
 COPY src/ src/
 RUN touch src/main.rs src/lib.rs && cargo build --release
 
+# Optional init-container image which installs the recommended iptables rules.
+# Build with:
+#   docker build --target iptables-init -t botbox-iptables-init:test .
+FROM alpine:3.19 AS iptables-init
+RUN apk add --no-cache iptables
+COPY scripts/iptables-init.sh /iptables-init.sh
+ENTRYPOINT ["/bin/sh", "/iptables-init.sh"]
+
 FROM gcr.io/distroless/cc-debian12:nonroot
 
 COPY --from=builder /app/target/release/botbox /botbox
@@ -22,10 +30,11 @@ COPY config.yaml /etc/botbox/config.yaml
 EXPOSE 8080 9090
 
 # Kubernetes health probes:
-#   livenessProbe:
-#     httpGet: { path: /healthz, port: 9090 }
 #   readinessProbe:
 #     httpGet: { path: /healthz, port: 9090 }
+#   # Note: /healthz is readiness-gated on required secrets; avoid using it for liveness.
+#   livenessProbe:
+#     tcpSocket: { port: 9090 }
 
 ENTRYPOINT ["/botbox"]
 CMD ["--config", "/etc/botbox/config.yaml"]

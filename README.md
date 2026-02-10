@@ -10,11 +10,12 @@ A Kubernetes sidecar that transparently adds API keys to outbound requests. Your
 - [kind](https://kind.sigs.k8s.io/)
 - kubectl
 
-### 1. Build and load the image
+### 1. Build and load the images
 
 ```bash
 docker build -t botbox:test .
-kind load docker-image botbox:test
+docker build --target iptables-init -t botbox-iptables-init:test .
+kind load docker-image botbox:test botbox-iptables-init:test
 ```
 
 ### 2. Write your egress policy
@@ -37,12 +38,12 @@ egress_policy:
 
 ```yaml
 initContainers:
-  - name: iptables-init          # sets up transparent redirect
-    image: alpine:3.19
-    command: ["/bin/sh", "-c", "apk add --no-cache iptables && iptables -t nat -N EGRESS_REDIRECT && iptables -t nat -A EGRESS_REDIRECT -o lo -j RETURN && iptables -t nat -A EGRESS_REDIRECT -m owner --uid-owner 1337 -j RETURN && iptables -t nat -A EGRESS_REDIRECT -p tcp --dport 80 -j REDIRECT --to-port 8080 && iptables -t nat -I OUTPUT 1 -p tcp -j EGRESS_REDIRECT && iptables -N EGRESS_FILTER && iptables -A EGRESS_FILTER -o lo -j RETURN && iptables -A EGRESS_FILTER -m owner --uid-owner 1337 -j RETURN && iptables -A EGRESS_FILTER -p udp --dport 53 -j RETURN && iptables -A EGRESS_FILTER -p tcp --dport 53 -j RETURN && iptables -A EGRESS_FILTER -p tcp -j DROP && iptables -A EGRESS_FILTER -p udp -j DROP && iptables -I OUTPUT 1 -j EGRESS_FILTER"]
+  - name: iptables-init          # installs the recommended iptables NAT+filter rules
+    image: botbox-iptables-init:test
     securityContext:
       capabilities: { add: [NET_ADMIN] }
       runAsUser: 0
+      runAsNonRoot: false
 
   - name: botbox                  # runs for the pod's lifetime
     image: botbox:test
@@ -56,6 +57,9 @@ initContainers:
 containers:
   - name: app                     # your application — no proxy config needed
     image: your-app:latest
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000             # must NOT be 1337 (BotBox UID) or iptables owner-match can be bypassed
 ```
 
 ### 4. Run the E2E test

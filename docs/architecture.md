@@ -50,7 +50,39 @@ src/
 
 ## iptables Transparent Redirect
 
-An init container runs before BotBox to install NAT rules:
+An init container runs before BotBox to install NAT + filter rules.
+
+This repo provides an optional init image (Docker target `iptables-init`) which runs `scripts/iptables-init.sh` to apply the rules below:
+
+```bash
+docker build --target iptables-init -t botbox-iptables-init:test .
+```
+
+Example init container:
+
+```yaml
+- name: iptables-init
+  image: botbox-iptables-init:test
+  securityContext:
+    runAsUser: 0
+    runAsNonRoot: false
+    capabilities:
+      add: [NET_ADMIN]
+  # If you change the BotBox UID/port, set these to match.
+  # env:
+  #   - name: BOTBOX_UID
+  #     value: "1337"
+  #   - name: BOTBOX_PROXY_PORT
+  #     value: "8080"
+```
+
+The init script supports overrides via environment variables:
+- `BOTBOX_UID` (default `1337`)
+- `BOTBOX_PROXY_PORT` (default `8080`)
+- `BOTBOX_REDIRECT_FROM_PORT` (default `80`)
+- `BOTBOX_NAT_CHAIN` (default `EGRESS_REDIRECT`)
+- `BOTBOX_FILTER_CHAIN` (default `EGRESS_FILTER`)
+- `BOTBOX_IPTABLES_WAIT_SECONDS` (default `5`)
 
 ```
 iptables -t nat -N EGRESS_REDIRECT
@@ -84,6 +116,7 @@ iptables -I OUTPUT 1 -j EGRESS_FILTER
 | Filter: `-I OUTPUT 1 -j EGRESS_FILTER` | Insert the filter chain at the top of OUTPUT (ensures priority over existing rules) |
 
 BotBox runs as UID 1337 (Istio convention). This ensures its upstream HTTPS connections are not redirected back to itself.
+Ensure application containers do NOT run as UID 1337, or they can bypass the owner-match rules.
 
 ### Transparent vs Explicit Proxy Mode
 

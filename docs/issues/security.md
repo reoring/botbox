@@ -39,9 +39,12 @@ Where this shows up:
 - `README.md` (initContainer iptables example)
 - `docs/architecture.md` (transparent redirect explanation)
 - `k8s/egress-test.yaml` (iptables rules used in E2E)
+- `scripts/iptables-init.sh` (idempotent init script)
+- `Dockerfile` (Docker target `iptables-init` builds the init image)
 
 Current status in this repository:
 - Example manifests/docs now include an OUTPUT filter chain that drops direct outbound TCP **and** UDP from non-UID 1337 processes (blocks HTTPS and QUIC bypass). Only DNS (UDP/TCP 53) is exempted.
+- The rules are applied by the optional init image (Docker target `iptables-init`) which runs `scripts/iptables-init.sh`.
 - Remaining bypass: any workload running as UID 1337 can bypass `-m owner --uid-owner 1337`.
 
 Why this is hard:
@@ -68,9 +71,8 @@ TODO:
 - [x] Decide and document the supported enforcement model (Option A) and what is *out of scope*.
 - [x] Update `README.md` and `k8s/egress-test.yaml` to include egress-blocking filter rules (Option A).
 - [x] Tighten the filter rules to also block non-DNS UDP (QUIC/UDP 443 bypass); allowlist only what the pod actually needs.
-- [ ] Make the `--uid-owner 1337` assumption explicit and enforceable:
-  - ensure app containers do not run as UID 1337 (Pod/Container `securityContext`)
-  - consider `-m cgroup` (where available) instead of UID matching for stronger separation
+- [x] Ensure examples/docs set application containers to a UID != 1337 (BotBox UID).
+- [ ] Consider `-m cgroup` (where available) instead of UID matching for stronger separation.
 - [ ] Add an automated test (kind/E2E) that proves bypass is blocked for direct TCP 443 and direct UDP 443, while HTTP via BotBox still succeeds.
 
 

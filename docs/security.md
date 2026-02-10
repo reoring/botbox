@@ -42,10 +42,11 @@ Warning: Setting `allow_non_loopback: true` without compensating controls (authe
 
 - Policy is host-based with exact match semantics.
 - Recommended mode is `default_action: deny`.
+- Deployments must prevent direct outbound connections from application containers (iptables OUTPUT filter rules and/or NetworkPolicy). NAT redirect alone is bypassable for HTTPS and QUIC.
 - Host normalization is applied consistently in both validation and runtime lookup:
   - trim whitespace
   - lowercase
-  - strip port for matching
+  - strip port for host matching (port is validated separately)
 - Duplicate rules after normalization are rejected (for example, `example.com` and `EXAMPLE.COM:443`).
 - Policy is port-aware: requests default to port 443 only unless `allowed_ports` is explicitly configured per rule.
 - Non-443 ports are denied by default, even if the host matches.
@@ -120,6 +121,8 @@ egress_policy:
 
 - Keep `allow_non_loopback: false` unless there is a strong, reviewed requirement.
 - Keep `default_action: deny`.
+- Apply the recommended iptables NAT+filter rules via an init container (this repo provides an optional init image target `iptables-init`); avoid hand-maintained one-liner commands drifting over time.
+- If you change the BotBox `runAsUser` from 1337, set `BOTBOX_UID` in the init container to match.
 - Restrict Pod-level network paths with Kubernetes `NetworkPolicy`.
 - Mount secrets read-only and with least-privilege file permissions.
 - Do not co-locate untrusted workloads in the same Pod as BotBox.
@@ -130,6 +133,7 @@ egress_policy:
 - Use NetworkPolicy to restrict pod-level egress to only DNS and the proxy's upstream targets.
 - If `allow_non_loopback` must be enabled, deploy compensating controls (mTLS or shared-secret authentication) and document the justification.
 - Ensure app containers do NOT run as UID 1337 (BotBox's UID); otherwise they can bypass iptables owner-match rules.
+- Use `/healthz` for readiness only (it is gated on required secrets). For liveness, prefer a TCP socket probe on port 9090, or add a separate always-200 endpoint.
 
 ## Residual Risks and Limitations
 
@@ -142,4 +146,3 @@ egress_policy:
 
 - Unit tests cover allowlist behavior, header rewrite safety, secret reload logic, and proxy normalization paths.
 - Run integration tests in an environment that permits local socket bind operations.
-
