@@ -26,8 +26,8 @@ logs="$(k -n "${NAMESPACE}" logs egress-test -c curl-client)"
 echo "${logs}"
 
 if ! printf '%s\n' "${logs}" | grep -q -- "--- curl exit code: 0 ---"; then
-  echo "E2E failed: non-MITM egress smoke test did not complete successfully"
+  echo "E2E failed: HTTP-mode egress smoke test did not complete successfully"
   exit 1
 fi
 
-echo "Non-MITM E2E checks passed."
+echo "HTTP-mode E2E checks passed."

@@ -14,11 +14,11 @@ pub struct Metrics {
     pub header_rewrites_total: IntCounterVec,
     pub upstream_errors_total: IntCounterVec,
     pub request_duration_seconds: HistogramVec,
-    // MITM metrics
+    // HTTPS interception metrics
     pub tls_handshakes_total: IntCounterVec,
-    pub mitm_cert_issued_total: IntCounterVec,
-    pub mitm_cert_cache_total: IntCounterVec,
-    pub mitm_host_mismatch_total: IntCounter,
+    pub https_interception_cert_issued_total: IntCounterVec,
+    pub https_interception_cert_cache_total: IntCounterVec,
+    pub https_interception_host_mismatch_total: IntCounter,
 }
 
 impl Metrics {
@@ -59,32 +59,35 @@ impl Metrics {
         .unwrap();
 
         let tls_handshakes_total = IntCounterVec::new(
-            Opts::new("botbox_tls_handshakes_total", "Total MITM TLS handshakes"),
+            Opts::new(
+                "botbox_tls_handshakes_total",
+                "Total HTTPS interception TLS handshakes",
+            ),
             &["result"],
         )
         .unwrap();
 
-        let mitm_cert_issued_total = IntCounterVec::new(
+        let https_interception_cert_issued_total = IntCounterVec::new(
             Opts::new(
-                "botbox_mitm_cert_issued_total",
-                "Total MITM certificates issued",
+                "botbox_https_interception_cert_issued_total",
+                "Total HTTPS interception certificates issued",
             ),
             &["decision"],
         )
         .unwrap();
 
-        let mitm_cert_cache_total = IntCounterVec::new(
+        let https_interception_cert_cache_total = IntCounterVec::new(
             Opts::new(
-                "botbox_mitm_cert_cache_total",
-                "Total MITM cert cache operations",
+                "botbox_https_interception_cert_cache_total",
+                "Total HTTPS interception cert cache operations",
             ),
             &["result"],
         )
         .unwrap();
 
-        let mitm_host_mismatch_total = IntCounter::new(
-            "botbox_mitm_host_mismatch_total",
-            "Total MITM SNI/Host mismatches",
+        let https_interception_host_mismatch_total = IntCounter::new(
+            "botbox_https_interception_host_mismatch_total",
+            "Total HTTPS interception SNI/Host mismatches",
         )
         .unwrap();
 
@@ -102,13 +105,13 @@ impl Metrics {
             .register(Box::new(tls_handshakes_total.clone()))
             .unwrap();
         registry
-            .register(Box::new(mitm_cert_issued_total.clone()))
+            .register(Box::new(https_interception_cert_issued_total.clone()))
             .unwrap();
         registry
-            .register(Box::new(mitm_cert_cache_total.clone()))
+            .register(Box::new(https_interception_cert_cache_total.clone()))
             .unwrap();
         registry
-            .register(Box::new(mitm_host_mismatch_total.clone()))
+            .register(Box::new(https_interception_host_mismatch_total.clone()))
             .unwrap();
 
         Metrics {
@@ -118,9 +121,9 @@ impl Metrics {
             upstream_errors_total,
             request_duration_seconds,
             tls_handshakes_total,
-            mitm_cert_issued_total,
-            mitm_cert_cache_total,
-            mitm_host_mismatch_total,
+            https_interception_cert_issued_total,
+            https_interception_cert_cache_total,
+            https_interception_host_mismatch_total,
         }
     }
 }

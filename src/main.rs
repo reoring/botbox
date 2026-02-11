@@ -1,8 +1,8 @@
 use anyhow::Result;
 use botbox::allowlist::Allowlist;
 use botbox::config::Config;
+use botbox::https_interception;
 use botbox::metrics::{handle_metrics_request, Metrics};
-use botbox::mitm;
 use botbox::proxy::{ProxyBody, ProxyHandler};
 use botbox::{logging, secrets, tls};
 use clap::Parser;
@@ -117,7 +117,7 @@ async fn main() -> Result<()> {
         std::time::Duration::from_secs(30),
     ));
 
-    // Shared shutdown channel for metrics + MITM listeners
+    // Shared shutdown channel for metrics + HTTPS interception listeners
     let (shutdown_tx, _) = tokio::sync::watch::channel(());
 
     // Start metrics server
@@ -137,49 +137,46 @@ async fn main() -> Result<()> {
         .await;
     });
 
-    // Shared connection semaphore (HTTP proxy + MITM share the same pool)
+    // Shared connection semaphore (HTTP proxy + HTTPS interception share the same pool)
     let semaphore = Arc::new(Semaphore::new(config.max_connections() as usize));
 
-    // MITM TLS listener (if enabled)
-    let mitm_handle = if let Some(ref mitm_config) = config.mitm {
-        if mitm_config.enabled {
-            info!("MITM mode enabled, loading CA material");
-            let ca = mitm::MitmCa::load(&mitm_config.ca_cert_path, &mitm_config.ca_key_path)?;
+    // HTTPS interception TLS listener (if enabled)
+    let https_interception_handle = if let Some(ref cfg) = config.https_interception {
+        if cfg.enabled {
+            info!("HTTPS interception mode enabled, loading CA material");
+            let ca =
+                https_interception::HttpsInterceptionCa::load(&cfg.ca_cert_path, &cfg.ca_key_path)?;
             let ca = Arc::new(ca);
 
-            let resolver = Arc::new(mitm::MitmCertResolver::new(
+            let resolver = Arc::new(https_interception::HttpsInterceptionCertResolver::new(
                 ca,
-                mitm_config,
+                cfg,
                 allowlist,
                 metrics.clone(),
             ));
-            let tls_config = mitm::build_mitm_server_config(resolver);
+            let tls_config = https_interception::build_https_interception_server_config(resolver);
 
-            let mitm_addr: SocketAddr = format!(
-                "{}:{}",
-                mitm_config.listen_addr(),
-                mitm_config.listen_port()
-            )
-            .parse()
-            .unwrap();
-            info!(addr = %mitm_addr, "starting MITM TLS listener");
-            let mitm_listener = TcpListener::bind(mitm_addr).await?;
+            let addr: SocketAddr = format!("{}:{}", cfg.listen_addr(), cfg.listen_port())
+                .parse()
+                .unwrap();
+            info!(addr = %addr, "starting HTTPS interception TLS listener");
+            let listener = TcpListener::bind(addr).await?;
 
-            let mitm_handler = handler.clone();
-            let mitm_metrics = metrics.clone();
-            let mitm_semaphore = semaphore.clone();
-            let mitm_shutdown_rx = shutdown_tx.subscribe();
-            let mitm_cfg = mitm_config.clone();
+            let handler = handler.clone();
+            let metrics = metrics.clone();
+            let semaphore = semaphore.clone();
+            let shutdown_rx = shutdown_tx.subscribe();
+            let cfg = cfg.clone();
 
             Some(tokio::spawn(async move {
-                mitm::run_mitm_listener(
-                    mitm_listener,
+                https_interception::run_https_interception_listener(
+                    listener,
                     tls_config,
-                    mitm_handler,
-                    mitm_cfg,
-                    mitm_metrics,
-                    mitm_semaphore,
-                    mitm_shutdown_rx,
+                    handler,
+                    cfg,
+                    metrics,
+                    semaphore,
+                    shutdown_rx,
                 )
                 .await;
             }))
@@ -306,13 +303,13 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Signal metrics + MITM servers to shut down
+    // Signal metrics + HTTPS interception servers to shut down
     drop(shutdown_tx);
     info!("waiting for metrics server to stop");
     let _ = metrics_handle.await;
 
-    if let Some(handle) = mitm_handle {
-        info!("waiting for MITM listener to stop");
+    if let Some(handle) = https_interception_handle {
+        info!("waiting for HTTPS interception listener to stop");
         let _ = handle.await;
     }
 

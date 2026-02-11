@@ -2,13 +2,13 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: mitm-test
+  name: https-interception-test
 ---
 apiVersion: v1
 kind: Secret
 metadata:
   name: botbox-secrets
-  namespace: mitm-test
+  namespace: https-interception-test
 type: Opaque
 stringData:
   openai-api-key: "REPLACE-ME-NOT-A-REAL-KEY"
@@ -17,7 +17,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: botbox-config
-  namespace: mitm-test
+  namespace: https-interception-test
 data:
   config.yaml: |
     listen_addr: "127.0.0.1"
@@ -36,12 +36,12 @@ data:
               value: "Bearer {value}"
               secret_ref: openai-api-key
 
-    mitm:
+    https_interception:
       enabled: true
       listen_addr: "127.0.0.1"
       listen_port: 8443
-      ca_cert_path: "/etc/botbox/mitm/ca.crt"
-      ca_key_path: "/etc/botbox/mitm/ca.key"
+      ca_cert_path: "/etc/botbox/https_interception/ca.crt"
+      ca_key_path: "/etc/botbox/https_interception/ca.key"
       enforce_sni_host_match: true
       deny_handshake_on_disallowed_sni: false
       cert_ttl_seconds: 86400
@@ -52,8 +52,8 @@ data:
 apiVersion: v1
 kind: Pod
 metadata:
-  name: mitm-test
-  namespace: mitm-test
+  name: https-interception-test
+  namespace: https-interception-test
 spec:
   restartPolicy: Never
   initContainers:
@@ -80,9 +80,9 @@ spec:
       image: botbox-iptables-init:test
       imagePullPolicy: Never
       env:
-        - name: BOTBOX_REDIRECT_FROM_PORT
-          value: "443"
-        - name: BOTBOX_PROXY_PORT
+        - name: BOTBOX_ENABLE_HTTPS_INTERCEPTION
+          value: "1"
+        - name: BOTBOX_HTTPS_INTERCEPTION_PORT
           value: "8443"
       securityContext:
         capabilities:
@@ -104,7 +104,7 @@ spec:
         - containerPort: 8080
           name: proxy
         - containerPort: 8443
-          name: mitm
+          name: https-intercept
         - containerPort: 9090
           name: metrics
       readinessProbe:
@@ -121,7 +121,7 @@ spec:
           mountPath: /etc/botbox
           readOnly: true
         - name: botbox-ca
-          mountPath: /etc/botbox/mitm
+          mountPath: /etc/botbox/https_interception
           readOnly: true
 
   containers:
@@ -153,18 +153,18 @@ spec:
             exit 1
           fi
 
-          echo "--- MITM positive path (expect upstream reachability, often 401 with dummy key) ---"
+          echo "--- HTTPS interception positive path (expect upstream reachability, often 401 with dummy key) ---"
           code="$(curl -sS -o /tmp/openai.out -w '%{http_code}' https://api.openai.com/v1/models || true)"
-          echo "MITM_OPENAI_CODE=${code}"
+          echo "HTTPS_INTERCEPTION_OPENAI_CODE=${code}"
           cat /tmp/openai.out || true
           if [ "${code}" = "000" ]; then
             echo "openai request timed out or could not connect"
             exit 1
           fi
 
-          echo "--- MITM negative allowlist path (expect deny) ---"
+          echo "--- HTTPS interception negative allowlist path (expect deny) ---"
           deny_code="$(curl -sS -o /tmp/deny.out -w '%{http_code}' https://example.com/ -m 8 || true)"
-          echo "MITM_DENY_CODE=${deny_code}"
+          echo "HTTPS_INTERCEPTION_DENY_CODE=${deny_code}"
           if [ "${deny_code}" != "403" ]; then
             echo "expected deny code 403 for non-allowlisted host"
             cat /tmp/deny.out || true
@@ -174,7 +174,7 @@ spec:
           echo "--- Direct bypass checks ---"
           echo "TCP/443 direct probe"
           tcp_code="$(curl -sS -o /tmp/tcp.out -w '%{http_code}' --connect-timeout 2 -m 6 https://cloudflare.com/ || true)"
-          echo "MITM_TCP443_CODE=${tcp_code}"
+          echo "HTTPS_INTERCEPTION_TCP443_CODE=${tcp_code}"
           if [ "${tcp_code}" != "403" ] && [ "${tcp_code}" != "000" ]; then
             echo "unexpected TCP/443 probe result"
             cat /tmp/tcp.out || true
@@ -187,14 +187,14 @@ spec:
             curl -sS --http3 --connect-timeout 2 -m 6 https://cloudflare-quic.com/ >/tmp/udp.out 2>&1
             udp_rc=$?
             set -e
-            echo "MITM_UDP443_RC=${udp_rc}"
+            echo "HTTPS_INTERCEPTION_UDP443_RC=${udp_rc}"
             if [ "${udp_rc}" -eq 0 ]; then
               echo "expected UDP/443 probe to fail"
               cat /tmp/udp.out || true
               exit 1
             fi
           else
-            echo "MITM_HTTP3_UNSUPPORTED=1"
+            echo "HTTPS_INTERCEPTION_HTTP3_UNSUPPORTED=1"
           fi
       volumeMounts:
         - name: botbox-ca

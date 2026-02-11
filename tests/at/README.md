@@ -23,7 +23,7 @@ Notes:
 
 ## Automated Execution (kind E2E)
 
-For an automated acceptance run (image build + kind image load + non-MITM E2E + MITM E2E), use:
+For an automated acceptance run (image build + kind image load + HTTP-mode E2E + HTTPS interception E2E), use:
 
 ```bash
 tests/e2e/run-kind-acceptance.sh

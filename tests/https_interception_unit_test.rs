@@ -32,7 +32,7 @@ sV8+/a4Kx0vtijnZOOOdSSAWy2A84qufitrcdlonQd8NE2dJz4JO98d7
 -----END PRIVATE KEY-----
 "#;
 
-struct MitmSpec {
+struct HttpsInterceptionSpec {
     rules_yaml: String,
     write_ca_files: bool,
     initial_secrets: Vec<(String, String)>,
@@ -43,7 +43,7 @@ struct MitmSpec {
     cert_cache_ttl_seconds: u64,
 }
 
-impl Default for MitmSpec {
+impl Default for HttpsInterceptionSpec {
     fn default() -> Self {
         Self {
             rules_yaml: rules_allow_hosts(&["localhost"]),
@@ -123,7 +123,7 @@ struct BotboxProcess {
     child: Child,
     _tmp: TempDir,
     metrics_addr: SocketAddr,
-    mitm_addr: SocketAddr,
+    https_interception_addr: SocketAddr,
     ca_cert_pem: Vec<u8>,
     secrets_dir: std::path::PathBuf,
     stdout_log_path: PathBuf,
@@ -138,7 +138,7 @@ impl Drop for BotboxProcess {
 }
 
 impl BotboxProcess {
-    fn start(spec: MitmSpec) -> Self {
+    fn start(spec: HttpsInterceptionSpec) -> Self {
         let tmp = TempDir::new().expect("failed to create tempdir");
         let config_path = tmp.path().join("config.yaml");
         let secrets_dir = tmp.path().join("secrets");
@@ -160,7 +160,7 @@ impl BotboxProcess {
 
         let listen_port = pick_free_port();
         let metrics_port = pick_free_port();
-        let mitm_port = pick_free_port();
+        let https_interception_port = pick_free_port();
 
         let config = format!(
             r#"listen_addr: "127.0.0.1"
@@ -174,10 +174,10 @@ egress_policy:
   rules:
 {rules_yaml}
 
-mitm:
+https_interception:
   enabled: true
   listen_addr: "127.0.0.1"
-  listen_port: {mitm_port}
+  listen_port: {https_interception_port}
   ca_cert_path: "{ca_cert_path}"
   ca_key_path: "{ca_key_path}"
   enforce_sni_host_match: true
@@ -192,7 +192,7 @@ mitm:
             secrets_dir = secrets_dir.display(),
             max_connections = spec.max_connections,
             rules_yaml = spec.rules_yaml,
-            mitm_port = mitm_port,
+            https_interception_port = https_interception_port,
             ca_cert_path = ca_cert_path.display(),
             ca_key_path = ca_key_path.display(),
             deny_handshake_on_disallowed_sni = spec.deny_handshake_on_disallowed_sni,
@@ -222,7 +222,7 @@ mitm:
             child,
             _tmp: tmp,
             metrics_addr: SocketAddr::from(([127, 0, 0, 1], metrics_port)),
-            mitm_addr: SocketAddr::from(([127, 0, 0, 1], mitm_port)),
+            https_interception_addr: SocketAddr::from(([127, 0, 0, 1], https_interception_port)),
             ca_cert_pem,
             secrets_dir,
             stdout_log_path,
@@ -398,7 +398,7 @@ fn load_root_store(ca_cert_pem: &[u8]) -> Result<RootCertStore> {
 }
 
 fn connect_tls_stream(
-    mitm_addr: SocketAddr,
+    https_interception_addr: SocketAddr,
     sni_dns_name: &str,
     ca_cert_pem: &[u8],
 ) -> Result<StreamOwned<ClientConnection, TcpStream>> {
@@ -414,8 +414,13 @@ fn connect_tls_stream(
     let connection = ClientConnection::new(Arc::new(client_config), server_name)
         .context("failed to build rustls client connection")?;
 
-    let socket = TcpStream::connect_timeout(&mitm_addr, Duration::from_secs(2))
-        .with_context(|| format!("failed to connect to MITM listener at {}", mitm_addr))?;
+    let socket = TcpStream::connect_timeout(&https_interception_addr, Duration::from_secs(2))
+        .with_context(|| {
+            format!(
+                "failed to connect to HTTPS interception listener at {}",
+                https_interception_addr
+            )
+        })?;
     socket
         .set_read_timeout(Some(Duration::from_secs(2)))
         .context("failed to set read timeout")?;
@@ -431,11 +436,11 @@ fn connect_tls_stream(
 }
 
 fn tls_handshake_leaf_cert(
-    mitm_addr: SocketAddr,
+    https_interception_addr: SocketAddr,
     sni_dns_name: &str,
     ca_cert_pem: &[u8],
 ) -> Result<Vec<u8>> {
-    let tls = connect_tls_stream(mitm_addr, sni_dns_name, ca_cert_pem)?;
+    let tls = connect_tls_stream(https_interception_addr, sni_dns_name, ca_cert_pem)?;
     let leaf = tls
         .conn
         .peer_certificates()
@@ -446,13 +451,13 @@ fn tls_handshake_leaf_cert(
 }
 
 fn tls_http_request(
-    mitm_addr: SocketAddr,
+    https_interception_addr: SocketAddr,
     sni_dns_name: &str,
     host_header: &str,
     path: &str,
     ca_cert_pem: &[u8],
 ) -> Result<String> {
-    let mut tls = connect_tls_stream(mitm_addr, sni_dns_name, ca_cert_pem)?;
+    let mut tls = connect_tls_stream(https_interception_addr, sni_dns_name, ca_cert_pem)?;
     let req = format!(
         "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
         path, host_header
@@ -485,10 +490,10 @@ fn run_openssl(args: &[&str]) -> Result<(ExitStatus, String, String)> {
 }
 
 #[test]
-fn mitm_config_fails_closed_when_ca_files_are_missing() {
-    let spec = MitmSpec {
+fn https_interception_config_fails_closed_when_ca_files_are_missing() {
+    let spec = HttpsInterceptionSpec {
         write_ca_files: false,
-        ..MitmSpec::default()
+        ..HttpsInterceptionSpec::default()
     };
     let mut proc = BotboxProcess::start(spec);
 
@@ -501,17 +506,17 @@ fn mitm_config_fails_closed_when_ca_files_are_missing() {
     });
     assert!(
         !status.success(),
-        "MITM enabled must fail startup when CA files are missing"
+        "HTTPS interception enabled must fail startup when CA files are missing"
     );
 }
 
 #[test]
-fn mitm_readiness_requires_required_secrets_and_ca_loaded() {
+fn https_interception_readiness_requires_required_secrets_and_ca_loaded() {
     // required secret missing -> /healthz should stay 503
-    let spec = MitmSpec {
+    let spec = HttpsInterceptionSpec {
         rules_yaml: rules_allow_host_with_secret_rewrite("localhost", "openai-api-key"),
         initial_secrets: Vec::new(),
-        ..MitmSpec::default()
+        ..HttpsInterceptionSpec::default()
     };
     let mut proc = BotboxProcess::start(spec);
     proc.wait_for_healthz_endpoint(Duration::from_secs(5));
@@ -535,30 +540,31 @@ fn mitm_readiness_requires_required_secrets_and_ca_loaded() {
 }
 
 #[test]
-fn mitm_sni_validation_accepts_valid_ascii_and_punycode_hosts() {
-    let spec = MitmSpec {
+fn https_interception_sni_validation_accepts_valid_ascii_and_punycode_hosts() {
+    let spec = HttpsInterceptionSpec {
         rules_yaml: rules_allow_hosts(&["localhost", "api.openai.com", "xn--bcher-kva.example"]),
-        ..MitmSpec::default()
+        ..HttpsInterceptionSpec::default()
     };
     let mut proc = BotboxProcess::start(spec);
     proc.wait_for_healthz_endpoint(Duration::from_secs(5));
 
     for host in ["localhost", "api.openai.com", "xn--bcher-kva.example"] {
-        tls_handshake_leaf_cert(proc.mitm_addr, host, &proc.ca_cert_pem).unwrap_or_else(|e| {
-            panic!("valid SNI host '{}' should complete handshake: {}", host, e)
-        });
+        tls_handshake_leaf_cert(proc.https_interception_addr, host, &proc.ca_cert_pem)
+            .unwrap_or_else(|e| {
+                panic!("valid SNI host '{}' should complete handshake: {}", host, e)
+            });
     }
 }
 
 #[test]
-fn mitm_sni_validation_rejects_invalid_or_oversized_hosts() {
-    let spec = MitmSpec::default();
+fn https_interception_sni_validation_rejects_invalid_or_oversized_hosts() {
+    let spec = HttpsInterceptionSpec::default();
     let mut proc = BotboxProcess::start(spec);
     proc.wait_for_healthz_endpoint(Duration::from_secs(5));
 
     let oversized = format!("{}.example.com", "a".repeat(254));
     for host in ["bad host", "bad_host", "*.example.com", &oversized] {
-        let result = tls_handshake_leaf_cert(proc.mitm_addr, host, &proc.ca_cert_pem);
+        let result = tls_handshake_leaf_cert(proc.https_interception_addr, host, &proc.ca_cert_pem);
         assert!(
             result.is_err(),
             "invalid SNI host '{}' must be rejected",
@@ -568,22 +574,23 @@ fn mitm_sni_validation_rejects_invalid_or_oversized_hosts() {
 }
 
 #[test]
-fn mitm_leaf_certificate_contains_san_dns_expected_validity_and_ca_issuer() {
-    let spec = MitmSpec {
+fn https_interception_leaf_certificate_contains_san_dns_expected_validity_and_ca_issuer() {
+    let spec = HttpsInterceptionSpec {
         rules_yaml: rules_allow_hosts(&["localhost"]),
         cert_ttl_seconds: 86_400,
-        ..MitmSpec::default()
+        ..HttpsInterceptionSpec::default()
     };
     let mut proc = BotboxProcess::start(spec);
     proc.wait_for_healthz_endpoint(Duration::from_secs(5));
 
-    let leaf_der = tls_handshake_leaf_cert(proc.mitm_addr, "localhost", &proc.ca_cert_pem)
-        .unwrap_or_else(|e| {
-            panic!(
-                "expected successful TLS handshake for certificate inspection: {}",
-                e
-            )
-        });
+    let leaf_der =
+        tls_handshake_leaf_cert(proc.https_interception_addr, "localhost", &proc.ca_cert_pem)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "expected successful TLS handshake for certificate inspection: {}",
+                    e
+                )
+            });
     assert!(
         !leaf_der.is_empty(),
         "leaf certificate DER must not be empty"
@@ -694,36 +701,51 @@ fn mitm_leaf_certificate_contains_san_dns_expected_validity_and_ca_issuer() {
 }
 
 #[test]
-fn mitm_cert_cache_exposes_hit_ttl_expiry_and_lru_eviction_behaviour() {
-    let spec = MitmSpec {
+fn https_interception_cert_cache_exposes_hit_ttl_expiry_and_lru_eviction_behaviour() {
+    let spec = HttpsInterceptionSpec {
         rules_yaml: rules_allow_hosts(&["localhost", "api.openai.com", "files.openai.com"]),
         cert_cache_size: 1,
         cert_cache_ttl_seconds: 1,
-        ..MitmSpec::default()
+        ..HttpsInterceptionSpec::default()
     };
     let mut proc = BotboxProcess::start(spec);
     proc.wait_for_healthz_endpoint(Duration::from_secs(5));
 
-    let cert_a1 = tls_handshake_leaf_cert(proc.mitm_addr, "localhost", &proc.ca_cert_pem)
-        .expect("first localhost handshake should succeed");
-    let cert_a2 = tls_handshake_leaf_cert(proc.mitm_addr, "localhost", &proc.ca_cert_pem)
-        .expect("second localhost handshake should succeed");
+    let cert_a1 =
+        tls_handshake_leaf_cert(proc.https_interception_addr, "localhost", &proc.ca_cert_pem)
+            .expect("first localhost handshake should succeed");
+    let cert_a2 =
+        tls_handshake_leaf_cert(proc.https_interception_addr, "localhost", &proc.ca_cert_pem)
+            .expect("second localhost handshake should succeed");
     assert_eq!(cert_a1, cert_a2, "expected cache hit for repeated same SNI");
 
-    let _cert_b = tls_handshake_leaf_cert(proc.mitm_addr, "api.openai.com", &proc.ca_cert_pem)
-        .expect("api.openai.com handshake should succeed");
-    let cert_a3 = tls_handshake_leaf_cert(proc.mitm_addr, "localhost", &proc.ca_cert_pem)
-        .expect("localhost handshake after eviction should succeed");
+    let _cert_b = tls_handshake_leaf_cert(
+        proc.https_interception_addr,
+        "api.openai.com",
+        &proc.ca_cert_pem,
+    )
+    .expect("api.openai.com handshake should succeed");
+    let cert_a3 =
+        tls_handshake_leaf_cert(proc.https_interception_addr, "localhost", &proc.ca_cert_pem)
+            .expect("localhost handshake after eviction should succeed");
     assert_ne!(
         cert_a1, cert_a3,
         "expected LRU eviction with cache_size=1 after another host was issued"
     );
 
-    let cert_c1 = tls_handshake_leaf_cert(proc.mitm_addr, "files.openai.com", &proc.ca_cert_pem)
-        .expect("files.openai.com handshake should succeed");
+    let cert_c1 = tls_handshake_leaf_cert(
+        proc.https_interception_addr,
+        "files.openai.com",
+        &proc.ca_cert_pem,
+    )
+    .expect("files.openai.com handshake should succeed");
     thread::sleep(Duration::from_secs(2));
-    let cert_c2 = tls_handshake_leaf_cert(proc.mitm_addr, "files.openai.com", &proc.ca_cert_pem)
-        .expect("files.openai.com handshake after TTL should succeed");
+    let cert_c2 = tls_handshake_leaf_cert(
+        proc.https_interception_addr,
+        "files.openai.com",
+        &proc.ca_cert_pem,
+    )
+    .expect("files.openai.com handshake after TTL should succeed");
     assert_ne!(
         cert_c1, cert_c2,
         "expected cert cache TTL expiry to force re-issuance"
@@ -731,16 +753,16 @@ fn mitm_cert_cache_exposes_hit_ttl_expiry_and_lru_eviction_behaviour() {
 }
 
 #[test]
-fn mitm_integration_trusted_tls_client_can_send_http1_request() {
-    let spec = MitmSpec {
+fn https_interception_integration_trusted_tls_client_can_send_http1_request() {
+    let spec = HttpsInterceptionSpec {
         rules_yaml: rules_allow_hosts(&["localhost"]),
-        ..MitmSpec::default()
+        ..HttpsInterceptionSpec::default()
     };
     let mut proc = BotboxProcess::start(spec);
     proc.wait_for_healthz_endpoint(Duration::from_secs(5));
 
     let resp = tls_http_request(
-        proc.mitm_addr,
+        proc.https_interception_addr,
         "localhost",
         "localhost",
         "/",
@@ -751,22 +773,22 @@ fn mitm_integration_trusted_tls_client_can_send_http1_request() {
     let status = parse_status_code(&resp).expect("response must include an HTTP status line");
     assert!(
         (100..600).contains(&status),
-        "expected a valid HTTP status code over MITM TLS listener, got {}",
+        "expected a valid HTTP status code over HTTPS interception TLS listener, got {}",
         status
     );
 }
 
 #[test]
-fn mitm_integration_rejects_sni_host_mismatch_with_400() {
-    let spec = MitmSpec {
+fn https_interception_integration_rejects_sni_host_mismatch_with_400() {
+    let spec = HttpsInterceptionSpec {
         rules_yaml: rules_allow_hosts(&["localhost", "example.com"]),
-        ..MitmSpec::default()
+        ..HttpsInterceptionSpec::default()
     };
     let mut proc = BotboxProcess::start(spec);
     proc.wait_for_healthz_endpoint(Duration::from_secs(5));
 
     let resp = tls_http_request(
-        proc.mitm_addr,
+        proc.https_interception_addr,
         "localhost",
         "example.com",
         "/",
@@ -782,16 +804,16 @@ fn mitm_integration_rejects_sni_host_mismatch_with_400() {
 }
 
 #[test]
-fn mitm_integration_rejects_non_443_host_port() {
-    let spec = MitmSpec {
+fn https_interception_integration_rejects_non_443_host_port() {
+    let spec = HttpsInterceptionSpec {
         rules_yaml: rules_allow_hosts(&["localhost"]),
-        ..MitmSpec::default()
+        ..HttpsInterceptionSpec::default()
     };
     let mut proc = BotboxProcess::start(spec);
     proc.wait_for_healthz_endpoint(Duration::from_secs(5));
 
     let resp = tls_http_request(
-        proc.mitm_addr,
+        proc.https_interception_addr,
         "localhost",
         "localhost:8443",
         "/",
@@ -807,17 +829,17 @@ fn mitm_integration_rejects_non_443_host_port() {
 }
 
 #[test]
-fn mitm_integration_rejects_absolute_form_request() {
-    let spec = MitmSpec {
+fn https_interception_integration_rejects_absolute_form_request() {
+    let spec = HttpsInterceptionSpec {
         rules_yaml: rules_allow_hosts(&["localhost"]),
-        ..MitmSpec::default()
+        ..HttpsInterceptionSpec::default()
     };
     let mut proc = BotboxProcess::start(spec);
     proc.wait_for_healthz_endpoint(Duration::from_secs(5));
 
     // Send an absolute-form request (http://localhost/path) instead of origin-form (/path).
     // This should be rejected with 400 to prevent URI authority bypass.
-    let mut tls = connect_tls_stream(proc.mitm_addr, "localhost", &proc.ca_cert_pem)
+    let mut tls = connect_tls_stream(proc.https_interception_addr, "localhost", &proc.ca_cert_pem)
         .expect("TLS handshake should succeed for allowed host");
     let req =
         "GET http://localhost:9999/bypass HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
@@ -832,20 +854,20 @@ fn mitm_integration_rejects_absolute_form_request() {
     assert_eq!(
         parse_status_code(&resp),
         Some(400),
-        "absolute-form request must be rejected with 400 on MITM listener"
+        "absolute-form request must be rejected with 400 on HTTPS interception listener"
     );
 }
 
 #[test]
-fn mitm_integration_rejects_absolute_form_even_with_matching_sni_host_and_port() {
-    let spec = MitmSpec {
+fn https_interception_integration_rejects_absolute_form_even_with_matching_sni_host_and_port() {
+    let spec = HttpsInterceptionSpec {
         rules_yaml: rules_allow_hosts(&["localhost"]),
-        ..MitmSpec::default()
+        ..HttpsInterceptionSpec::default()
     };
     let mut proc = BotboxProcess::start(spec);
     proc.wait_for_healthz_endpoint(Duration::from_secs(5));
 
-    let mut tls = connect_tls_stream(proc.mitm_addr, "localhost", &proc.ca_cert_pem)
+    let mut tls = connect_tls_stream(proc.https_interception_addr, "localhost", &proc.ca_cert_pem)
         .expect("TLS handshake should succeed for allowed host");
     let req = "GET https://localhost:443/safe HTTP/1.1\r\nHost: localhost:443\r\nConnection: close\r\n\r\n";
     tls.write_all(req.as_bytes())
@@ -864,11 +886,11 @@ fn mitm_integration_rejects_absolute_form_even_with_matching_sni_host_and_port()
 }
 
 #[test]
-fn mitm_config_rejects_cert_cache_ttl_larger_than_cert_ttl() {
-    let spec = MitmSpec {
+fn https_interception_config_rejects_cert_cache_ttl_larger_than_cert_ttl() {
+    let spec = HttpsInterceptionSpec {
         cert_ttl_seconds: 60,
         cert_cache_ttl_seconds: 61,
-        ..MitmSpec::default()
+        ..HttpsInterceptionSpec::default()
     };
     let mut proc = BotboxProcess::start(spec);
 
@@ -881,46 +903,50 @@ fn mitm_config_rejects_cert_cache_ttl_larger_than_cert_ttl() {
     });
     assert!(
         !status.success(),
-        "MITM config must fail startup when cert_cache_ttl_seconds > cert_ttl_seconds"
+        "HTTPS interception config must fail startup when cert_cache_ttl_seconds > cert_ttl_seconds"
     );
 }
 
 #[test]
-fn mitm_integration_enforces_connection_limit_on_mitm_listener() {
-    let spec = MitmSpec {
+fn https_interception_integration_enforces_connection_limit_on_https_interception_listener() {
+    let spec = HttpsInterceptionSpec {
         rules_yaml: rules_allow_hosts(&["localhost"]),
         max_connections: 1,
-        ..MitmSpec::default()
+        ..HttpsInterceptionSpec::default()
     };
     let mut proc = BotboxProcess::start(spec);
     proc.wait_for_healthz_endpoint(Duration::from_secs(5));
 
-    let first_conn = connect_tls_stream(proc.mitm_addr, "localhost", &proc.ca_cert_pem)
-        .expect("first TLS connection should succeed");
+    let first_conn =
+        connect_tls_stream(proc.https_interception_addr, "localhost", &proc.ca_cert_pem)
+            .expect("first TLS connection should succeed");
     thread::sleep(Duration::from_millis(150));
 
-    let second = connect_tls_stream(proc.mitm_addr, "localhost", &proc.ca_cert_pem);
+    let second = connect_tls_stream(proc.https_interception_addr, "localhost", &proc.ca_cert_pem);
     drop(first_conn);
     assert!(
         second.is_err(),
-        "second MITM TLS connection should be rejected when max_connections=1 and one connection is held open"
+        "second HTTPS interception TLS connection should be rejected when max_connections=1 and one connection is held open"
     );
 }
 
 #[test]
-fn mitm_metrics_tls_handshakes_are_counted_once_per_connection() {
-    let spec = MitmSpec {
+fn https_interception_metrics_tls_handshakes_are_counted_once_per_connection() {
+    let spec = HttpsInterceptionSpec {
         rules_yaml: rules_allow_hosts(&["localhost"]),
         deny_handshake_on_disallowed_sni: true,
-        ..MitmSpec::default()
+        ..HttpsInterceptionSpec::default()
     };
     let mut proc = BotboxProcess::start(spec);
     proc.wait_for_healthz_endpoint(Duration::from_secs(5));
 
-    tls_handshake_leaf_cert(proc.mitm_addr, "localhost", &proc.ca_cert_pem)
+    tls_handshake_leaf_cert(proc.https_interception_addr, "localhost", &proc.ca_cert_pem)
         .expect("successful handshake must succeed");
-    let disallowed =
-        tls_handshake_leaf_cert(proc.mitm_addr, "disallowed.example.com", &proc.ca_cert_pem);
+    let disallowed = tls_handshake_leaf_cert(
+        proc.https_interception_addr,
+        "disallowed.example.com",
+        &proc.ca_cert_pem,
+    );
     assert!(
         disallowed.is_err(),
         "disallowed SNI handshake should fail when deny_handshake_on_disallowed_sni=true"
@@ -958,17 +984,20 @@ fn mitm_metrics_tls_handshakes_are_counted_once_per_connection() {
 }
 
 #[test]
-fn mitm_integration_disallowed_sni_handshake_can_be_denied() {
-    let spec = MitmSpec {
+fn https_interception_integration_disallowed_sni_handshake_can_be_denied() {
+    let spec = HttpsInterceptionSpec {
         rules_yaml: rules_allow_hosts(&["localhost"]),
         deny_handshake_on_disallowed_sni: true,
-        ..MitmSpec::default()
+        ..HttpsInterceptionSpec::default()
     };
     let mut proc = BotboxProcess::start(spec);
     proc.wait_for_healthz_endpoint(Duration::from_secs(5));
 
-    let result =
-        tls_handshake_leaf_cert(proc.mitm_addr, "disallowed.example.com", &proc.ca_cert_pem);
+    let result = tls_handshake_leaf_cert(
+        proc.https_interception_addr,
+        "disallowed.example.com",
+        &proc.ca_cert_pem,
+    );
     assert!(
         result.is_err(),
         "deny_handshake_on_disallowed_sni=true must fail the TLS handshake for disallowed SNI"
@@ -976,17 +1005,18 @@ fn mitm_integration_disallowed_sni_handshake_can_be_denied() {
 }
 
 #[test]
-fn mitm_integration_disallowed_sni_can_return_http_403_when_handshake_denial_is_disabled() {
-    let spec = MitmSpec {
+fn https_interception_integration_disallowed_sni_can_return_http_403_when_handshake_denial_is_disabled(
+) {
+    let spec = HttpsInterceptionSpec {
         rules_yaml: rules_allow_hosts(&["localhost"]),
         deny_handshake_on_disallowed_sni: false,
-        ..MitmSpec::default()
+        ..HttpsInterceptionSpec::default()
     };
     let mut proc = BotboxProcess::start(spec);
     proc.wait_for_healthz_endpoint(Duration::from_secs(5));
 
     let resp = tls_http_request(
-        proc.mitm_addr,
+        proc.https_interception_addr,
         "disallowed.example.com",
         "disallowed.example.com",
         "/",

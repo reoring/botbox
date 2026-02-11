@@ -21,7 +21,7 @@ pub struct Config {
     pub max_connections: Option<u32>,
     pub allow_non_loopback: Option<bool>,
     pub egress_policy: EgressPolicy,
-    pub mitm: Option<MitmConfig>,
+    pub https_interception: Option<HttpsInterceptionConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -47,7 +47,7 @@ pub struct HeaderRewrite {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct MitmConfig {
+pub struct HttpsInterceptionConfig {
     pub enabled: bool,
     pub listen_addr: Option<String>,
     pub listen_port: Option<u16>,
@@ -61,7 +61,7 @@ pub struct MitmConfig {
     pub handshake_timeout_ms: Option<u64>,
 }
 
-impl MitmConfig {
+impl HttpsInterceptionConfig {
     pub fn listen_addr(&self) -> &str {
         self.listen_addr.as_deref().unwrap_or("127.0.0.1")
     }
@@ -277,81 +277,81 @@ impl Config {
             }
         }
 
-        // MITM validation
-        if let Some(mitm) = &self.mitm {
-            if mitm.enabled {
-                // MITM listen_addr must be loopback (hard requirement, even with allow_non_loopback)
-                let mitm_addr = mitm.listen_addr();
-                let mitm_ip: IpAddr = mitm_addr.parse().with_context(|| {
+        // HTTPS interception validation
+        if let Some(cfg) = &self.https_interception {
+            if cfg.enabled {
+                // HTTPS interception listen_addr must be loopback (hard requirement, even with allow_non_loopback)
+                let listen_addr = cfg.listen_addr();
+                let listen_ip: IpAddr = listen_addr.parse().with_context(|| {
                     format!(
-                        "mitm.listen_addr must be an IP literal, got '{}'",
-                        mitm_addr
+                        "https_interception.listen_addr must be an IP literal, got '{}'",
+                        listen_addr
                     )
                 })?;
-                if !mitm_ip.is_loopback() {
+                if !listen_ip.is_loopback() {
                     bail!(
-                        "mitm.listen_addr '{}' must be loopback; MITM listener must bind to loopback only",
-                        mitm_addr
+                        "https_interception.listen_addr '{}' must be loopback; HTTPS interception listener must bind to loopback only",
+                        listen_addr
                     );
                 }
 
                 // Port collision checks
-                let mitm_port = mitm.listen_port();
-                if mitm_port == self.listen_port() {
+                let port = cfg.listen_port();
+                if port == self.listen_port() {
                     bail!(
-                        "mitm.listen_port {} collides with listen_port {}",
-                        mitm_port,
+                        "https_interception.listen_port {} collides with listen_port {}",
+                        port,
                         self.listen_port()
                     );
                 }
-                if mitm_port == self.metrics_port() {
+                if port == self.metrics_port() {
                     bail!(
-                        "mitm.listen_port {} collides with metrics_port {}",
-                        mitm_port,
+                        "https_interception.listen_port {} collides with metrics_port {}",
+                        port,
                         self.metrics_port()
                     );
                 }
 
                 // CA path validation
-                let cert_empty = mitm.ca_cert_path.trim().is_empty();
-                let key_empty = mitm.ca_key_path.trim().is_empty();
+                let cert_empty = cfg.ca_cert_path.trim().is_empty();
+                let key_empty = cfg.ca_key_path.trim().is_empty();
                 if cert_empty && key_empty {
-                    bail!("mitm.ca_cert_path and mitm.ca_key_path must not be empty");
+                    bail!("https_interception.ca_cert_path and https_interception.ca_key_path must not be empty");
                 } else if cert_empty {
-                    bail!("mitm.ca_cert_path must not be empty");
+                    bail!("https_interception.ca_cert_path must not be empty");
                 } else if key_empty {
-                    bail!("mitm.ca_key_path must not be empty");
+                    bail!("https_interception.ca_key_path must not be empty");
                 }
 
                 // cert_cache_size > 0
-                if mitm.cert_cache_size() == 0 {
-                    bail!("mitm.cert_cache_size must be greater than 0");
+                if cfg.cert_cache_size() == 0 {
+                    bail!("https_interception.cert_cache_size must be greater than 0");
                 }
 
                 // cert_ttl_seconds in 60..604800
-                let ttl = mitm.cert_ttl_seconds();
+                let ttl = cfg.cert_ttl_seconds();
                 if !(60..=604800).contains(&ttl) {
                     bail!(
-                        "mitm.cert_ttl_seconds {} must be between 60 and 604800",
+                        "https_interception.cert_ttl_seconds {} must be between 60 and 604800",
                         ttl
                     );
                 }
 
                 // handshake_timeout_ms in 100..60000
-                let hs_timeout = mitm.handshake_timeout_ms();
+                let hs_timeout = cfg.handshake_timeout_ms();
                 if !(100..=60000).contains(&hs_timeout) {
                     bail!(
-                        "mitm.handshake_timeout_ms {} must be between 100 and 60000",
+                        "https_interception.handshake_timeout_ms {} must be between 100 and 60000",
                         hs_timeout
                     );
                 }
 
                 // cert_cache_ttl_seconds must not exceed cert_ttl_seconds
                 // (otherwise expired certificates could be served from cache)
-                let cache_ttl = mitm.cert_cache_ttl_seconds();
+                let cache_ttl = cfg.cert_cache_ttl_seconds();
                 if cache_ttl > ttl {
                     bail!(
-                        "mitm.cert_cache_ttl_seconds ({}) must not exceed mitm.cert_ttl_seconds ({})",
+                        "https_interception.cert_cache_ttl_seconds ({}) must not exceed https_interception.cert_ttl_seconds ({})",
                         cache_ttl,
                         ttl
                     );
@@ -620,73 +620,73 @@ egress_policy:
         assert!(err.to_string().contains("cannot be used in rewrites"));
     }
 
-    // --- MITM design contract tests (WIP docs/wip/mitm/*) ---
+    // --- HTTPS interception design contract tests (WIP docs/wip/*) ---
 
     #[test]
-    fn test_mitm_enabled_rejects_non_loopback_listener_even_with_global_override() {
+    fn test_https_interception_enabled_rejects_non_loopback_listener_even_with_global_override() {
         let yaml = r#"
 allow_non_loopback: true
 egress_policy:
   rules: []
-mitm:
+https_interception:
   enabled: true
   listen_addr: "0.0.0.0"
   listen_port: 8443
-  ca_cert_path: "/etc/botbox/mitm/ca.crt"
-  ca_key_path: "/etc/botbox/mitm/ca.key"
+  ca_cert_path: "/etc/botbox/https_interception/ca.crt"
+  ca_key_path: "/etc/botbox/https_interception/ca.key"
 "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("mitm.listen_addr"));
+        assert!(err.to_string().contains("https_interception.listen_addr"));
         assert!(err.to_string().contains("loopback"));
     }
 
     #[test]
-    fn test_mitm_enabled_rejects_port_collision_with_http_listener() {
+    fn test_https_interception_enabled_rejects_port_collision_with_http_listener() {
         let yaml = r#"
 listen_port: 8080
 metrics_port: 9090
 egress_policy:
   rules: []
-mitm:
+https_interception:
   enabled: true
   listen_addr: "127.0.0.1"
   listen_port: 8080
-  ca_cert_path: "/etc/botbox/mitm/ca.crt"
-  ca_key_path: "/etc/botbox/mitm/ca.key"
+  ca_cert_path: "/etc/botbox/https_interception/ca.crt"
+  ca_key_path: "/etc/botbox/https_interception/ca.key"
 "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("mitm.listen_port"));
+        assert!(err.to_string().contains("https_interception.listen_port"));
         assert!(err.to_string().contains("listen_port"));
     }
 
     #[test]
-    fn test_mitm_enabled_rejects_port_collision_with_metrics_listener() {
+    fn test_https_interception_enabled_rejects_port_collision_with_metrics_listener() {
         let yaml = r#"
 listen_port: 8080
 metrics_port: 9090
 egress_policy:
   rules: []
-mitm:
+https_interception:
   enabled: true
   listen_addr: "127.0.0.1"
   listen_port: 9090
-  ca_cert_path: "/etc/botbox/mitm/ca.crt"
-  ca_key_path: "/etc/botbox/mitm/ca.key"
+  ca_cert_path: "/etc/botbox/https_interception/ca.crt"
+  ca_key_path: "/etc/botbox/https_interception/ca.key"
 "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("mitm.listen_port"));
+        assert!(err.to_string().contains("https_interception.listen_port"));
         assert!(err.to_string().contains("metrics_port"));
     }
 
     #[test]
-    fn test_mitm_enabled_requires_non_empty_ca_paths() {
+    fn test_https_interception_enabled_requires_non_empty_ca_paths() {
         let yaml = r#"
 egress_policy:
   rules: []
-mitm:
+https_interception:
   enabled: true
   listen_addr: "127.0.0.1"
   listen_port: 8443
@@ -695,21 +695,21 @@ mitm:
 "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("mitm.ca_cert_path"));
-        assert!(err.to_string().contains("mitm.ca_key_path"));
+        assert!(err.to_string().contains("https_interception.ca_cert_path"));
+        assert!(err.to_string().contains("https_interception.ca_key_path"));
     }
 
     #[test]
-    fn test_mitm_enabled_rejects_zero_cert_cache_size() {
+    fn test_https_interception_enabled_rejects_zero_cert_cache_size() {
         let yaml = r#"
 egress_policy:
   rules: []
-mitm:
+https_interception:
   enabled: true
   listen_addr: "127.0.0.1"
   listen_port: 8443
-  ca_cert_path: "/etc/botbox/mitm/ca.crt"
-  ca_key_path: "/etc/botbox/mitm/ca.key"
+  ca_cert_path: "/etc/botbox/https_interception/ca.crt"
+  ca_key_path: "/etc/botbox/https_interception/ca.key"
   cert_cache_size: 0
 "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
@@ -718,16 +718,16 @@ mitm:
     }
 
     #[test]
-    fn test_mitm_enabled_rejects_out_of_range_cert_ttl_seconds() {
+    fn test_https_interception_enabled_rejects_out_of_range_cert_ttl_seconds() {
         let yaml = r#"
 egress_policy:
   rules: []
-mitm:
+https_interception:
   enabled: true
   listen_addr: "127.0.0.1"
   listen_port: 8443
-  ca_cert_path: "/etc/botbox/mitm/ca.crt"
-  ca_key_path: "/etc/botbox/mitm/ca.key"
+  ca_cert_path: "/etc/botbox/https_interception/ca.crt"
+  ca_key_path: "/etc/botbox/https_interception/ca.key"
   cert_ttl_seconds: 30
 "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
@@ -736,16 +736,16 @@ mitm:
     }
 
     #[test]
-    fn test_mitm_enabled_rejects_out_of_range_handshake_timeout_ms() {
+    fn test_https_interception_enabled_rejects_out_of_range_handshake_timeout_ms() {
         let yaml = r#"
 egress_policy:
   rules: []
-mitm:
+https_interception:
   enabled: true
   listen_addr: "127.0.0.1"
   listen_port: 8443
-  ca_cert_path: "/etc/botbox/mitm/ca.crt"
-  ca_key_path: "/etc/botbox/mitm/ca.key"
+  ca_cert_path: "/etc/botbox/https_interception/ca.crt"
+  ca_key_path: "/etc/botbox/https_interception/ca.key"
   handshake_timeout_ms: 5
 "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();

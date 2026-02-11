@@ -8,7 +8,7 @@ KUBECTL_CONTEXT="${KUBECTL_CONTEXT:-kind-${CLUSTER_NAME}}"
 CREATE_CLUSTER="${CREATE_KIND_CLUSTER:-0}"
 SKIP_IMAGE_BUILD="${SKIP_IMAGE_BUILD:-0}"
 RUN_EGRESS_TEST="${RUN_EGRESS_TEST:-1}"
-RUN_MITM_TEST="${RUN_MITM_TEST:-1}"
+RUN_HTTPS_INTERCEPTION_TEST="${RUN_HTTPS_INTERCEPTION_TEST:-1}"
 
 require_cmd() {
   local cmd="$1"
@@ -73,13 +73,13 @@ build_iptables_image() {
 
 run_e2e_tests() {
   if [[ "${RUN_EGRESS_TEST}" == "1" ]]; then
-    echo "[4/5] Running non-MITM E2E test..."
+    echo "[4/5] Running HTTP-mode E2E test (no interception)..."
     KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" bash "${ROOT_DIR}/tests/e2e/run-egress-test.sh"
   fi
 
-  if [[ "${RUN_MITM_TEST}" == "1" ]]; then
-    echo "[5/5] Running MITM E2E test..."
-    KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" bash "${ROOT_DIR}/tests/e2e/run-mitm-test.sh"
+  if [[ "${RUN_HTTPS_INTERCEPTION_TEST}" == "1" ]]; then
+    echo "[5/5] Running HTTPS interception E2E test..."
+    KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" bash "${ROOT_DIR}/tests/e2e/run-https-interception-test.sh"
   fi
 }
 
@@ -87,8 +87,8 @@ require_cmd docker
 require_cmd kind
 require_cmd kubectl
 
-if [[ "${RUN_EGRESS_TEST}" != "1" && "${RUN_MITM_TEST}" != "1" ]]; then
-  echo "Nothing to run: both RUN_EGRESS_TEST and RUN_MITM_TEST are disabled." >&2
+if [[ "${RUN_EGRESS_TEST}" != "1" && "${RUN_HTTPS_INTERCEPTION_TEST}" != "1" ]]; then
+  echo "Nothing to run: both RUN_EGRESS_TEST and RUN_HTTPS_INTERCEPTION_TEST are disabled." >&2
   exit 1
 fi
 

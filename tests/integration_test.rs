@@ -183,8 +183,8 @@ async fn test_allowed_host_without_rewrite_forwards() {
 }
 
 #[tokio::test]
-async fn test_non_mitm_http_path_regression_allow_and_deny() {
-    // Regression guard: existing non-MITM HTTP path should keep allow/deny semantics.
+async fn test_http_mode_path_regression_allow_and_deny() {
+    // Regression guard: existing HTTP-mode path (no interception) should keep allow/deny semantics.
     let mock_server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/smoke"))

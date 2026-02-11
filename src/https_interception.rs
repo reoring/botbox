@@ -1,5 +1,5 @@
 use crate::allowlist::{Allowlist, Decision};
-use crate::config::{extract_port, normalize_policy_host, MitmConfig};
+use crate::config::{extract_port, normalize_policy_host, HttpsInterceptionConfig};
 use crate::metrics::Metrics;
 use crate::proxy::{ProxyBody, ProxyHandler};
 use http_body_util::Full;
@@ -24,14 +24,14 @@ use time::OffsetDateTime;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
-/// CA material loaded from PEM files.
-pub struct MitmCa {
+/// Certificate-authority (CA) material loaded from PEM files.
+pub struct HttpsInterceptionCa {
     pub ca_cert_pem: String,
     pub ca_cert_der: Vec<u8>,
     pub ca_key_pair: KeyPair,
 }
 
-impl MitmCa {
+impl HttpsInterceptionCa {
     pub fn load(cert_path: &str, key_path: &str) -> anyhow::Result<Self> {
         let cert_pem = std::fs::read_to_string(cert_path)
             .map_err(|e| anyhow::anyhow!("failed to read CA cert from '{}': {}", cert_path, e))?;
@@ -43,7 +43,7 @@ impl MitmCa {
 
         let ca_cert_der = pem_to_der(&cert_pem)?;
 
-        Ok(MitmCa {
+        Ok(HttpsInterceptionCa {
             ca_cert_pem: cert_pem,
             ca_cert_der,
             ca_key_pair,
@@ -123,13 +123,13 @@ pub fn validate_sni(sni: &str) -> Result<String, &'static str> {
     Ok(host)
 }
 
-/// MITM certificate resolver implementing rustls `ResolvesServerCert`.
+/// HTTPS interception certificate resolver implementing rustls `ResolvesServerCert`.
 ///
 /// SNI is always required — without it, no hostname is available and no
 /// certificate can be issued.  Invalid SNI always causes handshake failure
 /// for the same reason.
-pub struct MitmCertResolver {
-    ca: Arc<MitmCa>,
+pub struct HttpsInterceptionCertResolver {
+    ca: Arc<HttpsInterceptionCa>,
     cache: CertCache,
     cert_ttl: Duration,
     deny_handshake_on_disallowed_sni: bool,
@@ -137,9 +137,9 @@ pub struct MitmCertResolver {
     metrics: Metrics,
 }
 
-impl fmt::Debug for MitmCertResolver {
+impl fmt::Debug for HttpsInterceptionCertResolver {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MitmCertResolver")
+        f.debug_struct("HttpsInterceptionCertResolver")
             .field(
                 "deny_handshake_on_disallowed_sni",
                 &self.deny_handshake_on_disallowed_sni,
@@ -148,14 +148,14 @@ impl fmt::Debug for MitmCertResolver {
     }
 }
 
-impl MitmCertResolver {
+impl HttpsInterceptionCertResolver {
     pub fn new(
-        ca: Arc<MitmCa>,
-        config: &MitmConfig,
+        ca: Arc<HttpsInterceptionCa>,
+        config: &HttpsInterceptionConfig,
         allowlist: Arc<Allowlist>,
         metrics: Metrics,
     ) -> Self {
-        MitmCertResolver {
+        HttpsInterceptionCertResolver {
             ca,
             cache: CertCache::new(
                 config.cert_cache_size() as usize,
@@ -215,12 +215,12 @@ impl MitmCertResolver {
     }
 }
 
-impl ResolvesServerCert for MitmCertResolver {
+impl ResolvesServerCert for HttpsInterceptionCertResolver {
     /// Resolve a certificate for the given ClientHello.
     ///
     /// Metrics policy: this function tracks **cert issuance** and **cache** counters
     /// only.  The **handshake result** counter (`tls_handshakes_total`) is owned
-    /// exclusively by the accept loop in `run_mitm_listener()` so that each TCP
+    /// exclusively by the accept loop in `run_https_interception_listener()` so that each TCP
     /// connection is counted exactly once.
     fn resolve(&self, client_hello: rustls::server::ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         // SNI is always required — without a hostname we cannot issue a cert.
@@ -231,7 +231,7 @@ impl ResolvesServerCert for MitmCertResolver {
             Ok(h) => h,
             Err(_reason) => {
                 self.metrics
-                    .mitm_cert_issued_total
+                    .https_interception_cert_issued_total
                     .with_label_values(&["skipped_invalid"])
                     .inc();
                 return None;
@@ -243,7 +243,7 @@ impl ResolvesServerCert for MitmCertResolver {
             let decision = self.allowlist.check(&hostname);
             if matches!(decision, Decision::Deny) {
                 self.metrics
-                    .mitm_cert_issued_total
+                    .https_interception_cert_issued_total
                     .with_label_values(&["skipped_disallowed"])
                     .inc();
                 return None;
@@ -253,13 +253,13 @@ impl ResolvesServerCert for MitmCertResolver {
         // Check cache
         if let Some(key) = self.cache.get(&hostname) {
             self.metrics
-                .mitm_cert_cache_total
+                .https_interception_cert_cache_total
                 .with_label_values(&["hit"])
                 .inc();
             return Some(key);
         }
         self.metrics
-            .mitm_cert_cache_total
+            .https_interception_cert_cache_total
             .with_label_values(&["miss"])
             .inc();
 
@@ -268,21 +268,23 @@ impl ResolvesServerCert for MitmCertResolver {
             Ok(key) => {
                 self.cache.insert(hostname, key.clone());
                 self.metrics
-                    .mitm_cert_issued_total
+                    .https_interception_cert_issued_total
                     .with_label_values(&["issued_allow"])
                     .inc();
                 Some(key)
             }
             Err(e) => {
-                error!(error = %e, "failed to issue MITM leaf certificate");
+                error!(error = %e, "failed to issue HTTPS interception leaf certificate");
                 None
             }
         }
     }
 }
 
-/// Build a rustls ServerConfig for the MITM TLS listener.
-pub fn build_mitm_server_config(resolver: Arc<MitmCertResolver>) -> Arc<ServerConfig> {
+/// Build a rustls ServerConfig for the HTTPS interception TLS listener.
+pub fn build_https_interception_server_config(
+    resolver: Arc<HttpsInterceptionCertResolver>,
+) -> Arc<ServerConfig> {
     let mut config = ServerConfig::builder()
         .with_no_client_auth()
         .with_cert_resolver(resolver);
@@ -291,9 +293,9 @@ pub fn build_mitm_server_config(resolver: Arc<MitmCertResolver>) -> Arc<ServerCo
     Arc::new(config)
 }
 
-/// Validate an HTTP request arriving over the MITM TLS listener.
+/// Validate an HTTP request arriving over the HTTPS interception TLS listener.
 ///
-/// MITM connections are transparently redirected from port 443. The app container
+/// HTTPS interception connections are transparently redirected from port 443. The app container
 /// thinks it is talking directly to the upstream server, so it MUST send
 /// origin-form requests (`GET /path HTTP/1.1`).  An absolute-form request
 /// (`GET http://host:PORT/path HTTP/1.1`) would carry its own authority/scheme
@@ -301,19 +303,19 @@ pub fn build_mitm_server_config(resolver: Arc<MitmCertResolver>) -> Arc<ServerCo
 /// attacker to bypass the port-443 restriction and the SNI/Host match check.
 /// We therefore reject any request that contains a URI authority or scheme.
 #[allow(clippy::result_large_err)]
-pub fn validate_mitm_request<B>(
+pub fn validate_https_interception_request<B>(
     req: &Request<B>,
     sni_host: &str,
     enforce_sni_host_match: bool,
     metrics: &Metrics,
 ) -> Result<(), Response<ProxyBody>> {
     // Reject absolute-form requests (scheme/authority in URI).
-    // MITM traffic must use origin-form only; absolute-form could bypass
+    // HTTPS interception traffic must use origin-form only; absolute-form could bypass
     // the Host/SNI checks because ProxyHandler prioritizes URI authority.
     if req.uri().scheme().is_some() || req.uri().authority().is_some() {
         return Err(error_response(
             400,
-            "absolute-form request not allowed on MITM listener",
+            "absolute-form request not allowed on HTTPS interception listener",
         ));
     }
 
@@ -334,7 +336,7 @@ pub fn validate_mitm_request<B>(
         if p != 443 {
             return Err(error_response(
                 403,
-                "MITM listener only accepts port 443 traffic",
+                "HTTPS interception listener only accepts port 443 traffic",
             ));
         }
     }
@@ -344,7 +346,7 @@ pub fn validate_mitm_request<B>(
         let host_only = normalize_policy_host(host_header);
         let sni_normalized = sni_host.trim().to_lowercase();
         if host_only != sni_normalized {
-            metrics.mitm_host_mismatch_total.inc();
+            metrics.https_interception_host_mismatch_total.inc();
             return Err(error_response(400, "SNI/Host header mismatch"));
         }
     }
@@ -362,19 +364,19 @@ fn error_response(status: u16, body: &str) -> Response<ProxyBody> {
         .unwrap()
 }
 
-/// Run the MITM TLS listener.
-pub async fn run_mitm_listener(
+/// Run the HTTPS interception TLS listener.
+pub async fn run_https_interception_listener(
     listener: TcpListener,
     tls_config: Arc<ServerConfig>,
     handler: Arc<ProxyHandler>,
-    mitm_config: MitmConfig,
+    cfg: HttpsInterceptionConfig,
     metrics: Metrics,
     semaphore: Arc<tokio::sync::Semaphore>,
     mut shutdown_rx: tokio::sync::watch::Receiver<()>,
 ) {
     let acceptor = tokio_rustls::TlsAcceptor::from(tls_config);
-    let handshake_timeout = Duration::from_millis(mitm_config.handshake_timeout_ms());
-    let enforce_sni_host_match = mitm_config.enforce_sni_host_match();
+    let handshake_timeout = Duration::from_millis(cfg.handshake_timeout_ms());
+    let enforce_sni_host_match = cfg.enforce_sni_host_match();
 
     let mut connections = tokio::task::JoinSet::new();
 
@@ -386,7 +388,7 @@ pub async fn run_mitm_listener(
                         let permit = match Arc::clone(&semaphore).try_acquire_owned() {
                             Ok(permit) => permit,
                             Err(_) => {
-                                warn!(peer = %addr, "MITM connection limit reached, dropping connection");
+                                warn!(peer = %addr, "HTTPS interception connection limit reached, dropping connection");
                                 drop(stream);
                                 continue;
                             }
@@ -405,7 +407,7 @@ pub async fn run_mitm_listener(
                                 Ok(Ok(tls)) => tls,
                                 Ok(Err(e)) => {
                                     if !e.to_string().contains("connection closed") {
-                                        warn!(peer = %addr, error = %e, "MITM TLS handshake failed");
+                                        warn!(peer = %addr, error = %e, "HTTPS interception TLS handshake failed");
                                     }
                                     metrics
                                         .tls_handshakes_total
@@ -414,7 +416,7 @@ pub async fn run_mitm_listener(
                                     return;
                                 }
                                 Err(_) => {
-                                    warn!(peer = %addr, "MITM TLS handshake timed out");
+                                    warn!(peer = %addr, "HTTPS interception TLS handshake timed out");
                                     metrics
                                         .tls_handshakes_total
                                         .with_label_values(&["timeout"])
@@ -442,8 +444,8 @@ pub async fn run_mitm_listener(
                                 let sni = sni_host.clone();
                                 let metrics = metrics.clone();
                                 async move {
-                                    // Validate MITM-specific constraints
-                                    if let Err(resp) = validate_mitm_request(
+                                    // Validate HTTPS interception-specific constraints
+                                    if let Err(resp) = validate_https_interception_request(
                                         &req,
                                         &sni,
                                         enforce_sni_host_match,
@@ -454,7 +456,7 @@ pub async fn run_mitm_listener(
 
                                     // Delegate to the existing proxy handler
                                     handler.handle(req).await.or_else(|e| {
-                                        error!(error = %e, "MITM request handling error");
+                                         error!(error = %e, "HTTPS interception request handling error");
                                         Ok::<_, hyper::Error>(
                                             Response::builder()
                                                 .status(500)
@@ -477,14 +479,14 @@ pub async fn run_mitm_listener(
                                     error!(
                                         peer = %addr,
                                         error = %e,
-                                        "MITM connection error"
+                                        "HTTPS interception connection error"
                                     );
                                 }
                             }
                         });
                     }
                     Err(e) => {
-                        error!(error = %e, "MITM accept error");
+                        error!(error = %e, "HTTPS interception accept error");
                     }
                 }
             }
@@ -494,9 +496,9 @@ pub async fn run_mitm_listener(
         }
     }
 
-    // Drain in-flight MITM connections
+    // Drain in-flight HTTPS interception connections
     info!(
-        "MITM listener shutting down, draining {} connections",
+        "HTTPS interception listener shutting down, draining {} connections",
         connections.len()
     );
     let drain_result = tokio::time::timeout(Duration::from_secs(30), async {
@@ -505,10 +507,10 @@ pub async fn run_mitm_listener(
     .await;
     if drain_result.is_err() {
         warn!(
-            "MITM drain timeout, aborting {} remaining connections",
+            "HTTPS interception drain timeout, aborting {} remaining connections",
             connections.len()
         );
         connections.abort_all();
     }
-    info!("MITM listener stopped");
+    info!("HTTPS interception listener stopped");
 }

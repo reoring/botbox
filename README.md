@@ -148,7 +148,7 @@ tests/e2e/run-kind-acceptance.sh
 
 ```bash
 tests/e2e/run-egress-test.sh
-tests/e2e/run-mitm-test.sh
+tests/e2e/run-https-interception-test.sh
 ```
 
 ### 6. Run unit tests
