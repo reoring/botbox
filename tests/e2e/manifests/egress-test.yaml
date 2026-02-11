@@ -47,6 +47,9 @@ spec:
     - name: iptables-init
       image: botbox-iptables-init:test
       imagePullPolicy: Never
+      env:
+        - name: BOTBOX_ENABLE_IPV6
+          value: "0"
       securityContext:
         capabilities:
           add: [NET_ADMIN]
@@ -82,7 +85,7 @@ spec:
           readOnly: true
   containers:
     - name: curl-client
-      image: curlimages/curl:latest
+      image: curlimages/curl:8.11.1
       securityContext:
         runAsUser: 1000
         runAsNonRoot: true
@@ -93,7 +96,7 @@ spec:
         - |
           echo "Waiting for botbox to be ready..."
           for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:9090/healthz > /dev/null 2>&1; then
+            if curl -sf --connect-timeout 10 --max-time 30 http://127.0.0.1:9090/healthz > /dev/null 2>&1; then
               echo "Proxy is ready!"
               break
             fi
@@ -101,7 +104,7 @@ spec:
             sleep 2
           done
           echo "--- Sending request through proxy ---"
-          curl -v http://api.openai.com/v1/models 2>&1
+          curl -v --connect-timeout 10 --max-time 30 http://api.openai.com/v1/models 2>&1
           EXIT_CODE=$?
           echo ""
           echo "--- curl exit code: $EXIT_CODE ---"

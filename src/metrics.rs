@@ -17,6 +17,7 @@ pub struct Metrics {
     // HTTPS interception metrics
     pub tls_handshakes_total: IntCounterVec,
     pub https_interception_cert_issued_total: IntCounterVec,
+    pub https_interception_cert_error_total: IntCounterVec,
     pub https_interception_cert_cache_total: IntCounterVec,
     pub https_interception_host_mismatch_total: IntCounter,
 }
@@ -72,7 +73,16 @@ impl Metrics {
                 "botbox_https_interception_cert_issued_total",
                 "Total HTTPS interception certificates issued",
             ),
-            &["decision"],
+            &["result"],
+        )
+        .unwrap();
+
+        let https_interception_cert_error_total = IntCounterVec::new(
+            Opts::new(
+                "botbox_https_interception_cert_error_total",
+                "Total HTTPS interception certificate generation errors",
+            ),
+            &["error_type"],
         )
         .unwrap();
 
@@ -108,6 +118,9 @@ impl Metrics {
             .register(Box::new(https_interception_cert_issued_total.clone()))
             .unwrap();
         registry
+            .register(Box::new(https_interception_cert_error_total.clone()))
+            .unwrap();
+        registry
             .register(Box::new(https_interception_cert_cache_total.clone()))
             .unwrap();
         registry
@@ -122,6 +135,7 @@ impl Metrics {
             request_duration_seconds,
             tls_handshakes_total,
             https_interception_cert_issued_total,
+            https_interception_cert_error_total,
             https_interception_cert_cache_total,
             https_interception_host_mismatch_total,
         }

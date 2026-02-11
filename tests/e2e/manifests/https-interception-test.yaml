@@ -84,6 +84,8 @@ spec:
           value: "1"
         - name: BOTBOX_HTTPS_INTERCEPTION_PORT
           value: "8443"
+        - name: BOTBOX_ENABLE_IPV6
+          value: "0"
       securityContext:
         capabilities:
           add: [NET_ADMIN]
@@ -142,7 +144,7 @@ spec:
           echo "Waiting for botbox readiness..."
           ready=0
           for i in $(seq 1 40); do
-            if curl -sf http://127.0.0.1:9090/healthz >/dev/null 2>&1; then
+            if curl -sf --connect-timeout 10 --max-time 30 http://127.0.0.1:9090/healthz >/dev/null 2>&1; then
               ready=1
               break
             fi
@@ -154,7 +156,7 @@ spec:
           fi
 
           echo "--- HTTPS interception positive path (expect upstream reachability, often 401 with dummy key) ---"
-          code="$(curl -sS -o /tmp/openai.out -w '%{http_code}' https://api.openai.com/v1/models || true)"
+          code="$(curl -v -sS --connect-timeout 10 --max-time 30 -o /tmp/openai.out -w '%{http_code}' https://api.openai.com/v1/models || true)"
           echo "HTTPS_INTERCEPTION_OPENAI_CODE=${code}"
           cat /tmp/openai.out || true
           if [ "${code}" = "000" ]; then
@@ -163,7 +165,7 @@ spec:
           fi
 
           echo "--- HTTPS interception negative allowlist path (expect deny) ---"
-          deny_code="$(curl -sS -o /tmp/deny.out -w '%{http_code}' https://example.com/ -m 8 || true)"
+          deny_code="$(curl -v -sS --connect-timeout 10 --max-time 30 -o /tmp/deny.out -w '%{http_code}' https://example.com/ || true)"
           echo "HTTPS_INTERCEPTION_DENY_CODE=${deny_code}"
           if [ "${deny_code}" != "403" ]; then
             echo "expected deny code 403 for non-allowlisted host"
@@ -173,7 +175,7 @@ spec:
 
           echo "--- Direct bypass checks ---"
           echo "TCP/443 direct probe"
-          tcp_code="$(curl -sS -o /tmp/tcp.out -w '%{http_code}' --connect-timeout 2 -m 6 https://cloudflare.com/ || true)"
+          tcp_code="$(curl -v -sS -o /tmp/tcp.out -w '%{http_code}' --connect-timeout 10 --max-time 30 https://cloudflare.com/ || true)"
           echo "HTTPS_INTERCEPTION_TCP443_CODE=${tcp_code}"
           if [ "${tcp_code}" != "403" ] && [ "${tcp_code}" != "000" ]; then
             echo "unexpected TCP/443 probe result"
@@ -184,7 +186,7 @@ spec:
           echo "UDP/443 direct probe (HTTP/3 if available)"
           if curl --help all 2>/dev/null | grep -q -- '--http3'; then
             set +e
-            curl -sS --http3 --connect-timeout 2 -m 6 https://cloudflare-quic.com/ >/tmp/udp.out 2>&1
+            curl -v -sS --http3 --connect-timeout 10 --max-time 30 https://cloudflare-quic.com/ >/tmp/udp.out 2>&1
             udp_rc=$?
             set -e
             echo "HTTPS_INTERCEPTION_UDP443_RC=${udp_rc}"

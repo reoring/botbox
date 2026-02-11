@@ -21,6 +21,38 @@ sequenceDiagram
     BotBox-->>App: 200 OK (streamed)
 ```
 
+### HTTPS Interception Flow
+
+When HTTPS interception is enabled, outbound port-443 traffic follows this path:
+
+```mermaid
+sequenceDiagram
+    participant App as App Container
+    participant IPT as iptables
+    participant TLS as BotBox HTTPS Interception<br/>(port 8443)
+    participant Proxy as BotBox Proxy Handler
+    participant API as Upstream API
+
+    App->>IPT: TLS ClientHello<br/>SNI: api.openai.com
+    IPT->>TLS: REDIRECT :443 → :8443
+
+    Note over TLS: Issue leaf cert for api.openai.com<br/>(signed by local CA, cached in LRU)
+    TLS->>App: ServerHello + leaf cert
+
+    App->>TLS: GET /v1/models<br/>Host: api.openai.com
+    Note over TLS: Validate: origin-form only,<br/>SNI/Host match, port 443
+
+    TLS->>Proxy: Decrypted HTTP request
+    Note over Proxy: Allowlist check → allow
+    Note over Proxy: Header rewrite → Authorization: Bearer sk-...
+    Note over Proxy: TLS origination → HTTPS
+
+    Proxy->>API: GET /v1/models<br/>Authorization: Bearer sk-...
+    API-->>Proxy: 200 OK (response body)
+    Proxy-->>TLS: 200 OK
+    TLS-->>App: 200 OK (re-encrypted)
+```
+
 The proxy handler executes these steps for each request:
 
 1. **Extract host** — from URI authority (explicit proxy) or Host header (transparent proxy)
@@ -39,6 +71,7 @@ src/
 ├── config.rs          # YAML config parsing with serde validation
 ├── error.rs           # ProxyError: SecretNotFound, InvalidHeaderName, InvalidHeaderValue
 ├── header_rewrite.rs  # Delete-then-add pattern to prevent header smuggling
+├── https_interception.rs # HTTPS interception: CA loading, cert cache, TLS listener, request validation
 ├── lib.rs             # Module re-exports
 ├── logging.rs         # tracing JSON subscriber setup
 ├── main.rs            # Server startup, signal handling, graceful shutdown
@@ -63,23 +96,27 @@ Example init container:
 ```yaml
 - name: iptables-init
   image: botbox-iptables-init:test
+  env:
+    - name: BOTBOX_ENABLE_IPV6
+      value: "1"                # required — set to "0" if ip6tables or ip6table_nat is unavailable
+    # - name: BOTBOX_UID
+    #   value: "1337"
+    # - name: BOTBOX_PROXY_PORT
+    #   value: "8080"
   securityContext:
     runAsUser: 0
     runAsNonRoot: false
     capabilities:
       add: [NET_ADMIN]
-  # If you change the BotBox UID/port, set these to match.
-  # env:
-  #   - name: BOTBOX_UID
-  #     value: "1337"
-  #   - name: BOTBOX_PROXY_PORT
-  #     value: "8080"
 ```
 
 The init script supports overrides via environment variables:
 - `BOTBOX_UID` (default `1337`)
 - `BOTBOX_PROXY_PORT` (default `8080`)
 - `BOTBOX_REDIRECT_FROM_PORT` (default `80`)
+- `BOTBOX_ENABLE_HTTPS_INTERCEPTION` (default `0` — set to `1` to add the port-443 → 8443 NAT redirect)
+- `BOTBOX_HTTPS_INTERCEPTION_PORT` (default `8443`)
+- `BOTBOX_ENABLE_IPV6` (**required**, no default — `1` to mirror all rules via ip6tables, `0` for IPv4-only)
 - `BOTBOX_NAT_CHAIN` (default `EGRESS_REDIRECT`)
 - `BOTBOX_FILTER_CHAIN` (default `EGRESS_FILTER`)
 - `BOTBOX_IPTABLES_WAIT_SECONDS` (default `5`)
@@ -106,6 +143,7 @@ iptables -I OUTPUT 1 -j EGRESS_FILTER
 | NAT: `-o lo -j RETURN` | Skip loopback traffic (healthz probes, metrics scraping) |
 | NAT: `--uid-owner 1337 -j RETURN` | Skip proxy's own outbound connections (prevents redirect loops) |
 | NAT: `--dport 80 -j REDIRECT --to-port 8080` | Redirect HTTP to the proxy |
+| NAT: `--dport 443 -j REDIRECT --to-port 8443` | Redirect HTTPS to the interception listener (when enabled) |
 | NAT: `-I OUTPUT 1 -j EGRESS_REDIRECT` | Insert the NAT redirect chain at the top of OUTPUT (ensures priority over existing rules) |
 | Filter: `-o lo -j RETURN` | Allow loopback traffic |
 | Filter: `--uid-owner 1337 -j RETURN` | Allow proxy's upstream HTTPS connections |
@@ -193,7 +231,8 @@ The secrets directory is watched via `inotify` (Linux) using the `notify` crate.
 
 | Port | Path | Description |
 |------|------|-------------|
-| 8080 | — | Proxy listener (loopback only) |
+| 8080 | — | HTTP proxy listener (loopback only) |
+| 8443 | — | HTTPS interception TLS listener (loopback only, when enabled) |
 | 9090 | `/healthz` | Returns 200 when ready, 503 otherwise |
 | 9090 | `/metrics` | Prometheus exposition format |
 | 9090 | other | Returns 404 |
@@ -206,8 +245,13 @@ All metrics are exposed in Prometheus text format on the metrics port.
 |---|---|---|---|
 | `botbox_requests_total` | Counter | `host`, `decision` | Total requests by host and allow/deny decision |
 | `botbox_request_duration_seconds` | Histogram | `host` | Upstream request duration |
-| `botbox_upstream_errors_total` | Counter | `host`, `error_type` | Upstream errors (connection failures, timeouts, HTTP errors) |
+| `botbox_upstream_errors_total` | Counter | `host`, `status_code` | Upstream errors (connection failures, timeouts, HTTP errors) |
 | `botbox_header_rewrites_total` | Counter | `host` | Header rewrite operations |
+| `botbox_tls_handshakes_total` | Counter | `result` | HTTPS interception TLS handshakes (`ok`, `io_error`, `timeout`) |
+| `botbox_https_interception_cert_issued_total` | Counter | `result` | Certificates issued or denied (`issued`, `denied`) |
+| `botbox_https_interception_cert_error_total` | Counter | `error_type` | Certificate generation errors (`signing_failed`) |
+| `botbox_https_interception_cert_cache_total` | Counter | `result` | Cert cache lookups (`hit`, `miss`) |
+| `botbox_https_interception_host_mismatch_total` | Counter | — | SNI/Host header mismatch detections |
 
 ## Graceful Shutdown
 

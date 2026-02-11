@@ -20,6 +20,7 @@ The tests validate the end-to-end behavior in a Kubernetes cluster (kind recomme
 Notes:
 - These tests require Pod-level iptables (`CAP_NET_ADMIN`) to be permitted.
 - The test pod reaches `httpbin.org` over the public internet.
+- `BOTBOX_ENABLE_IPV6` is required by the iptables init script. The AT manifest sets it to `0` (kind clusters typically lack ip6table_nat). For production dual-stack environments, set it to `1`.
 
 ## Automated Execution (kind E2E)
 

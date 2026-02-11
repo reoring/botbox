@@ -54,6 +54,8 @@ spec:
           value: "1337"
         - name: BOTBOX_PROXY_PORT
           value: "8080"
+        - name: BOTBOX_ENABLE_IPV6
+          value: "0"
       securityContext:
         runAsUser: 0
         runAsNonRoot: false
@@ -89,7 +91,7 @@ spec:
           mountPath: /etc/botbox
           readOnly: true
     - name: client
-      image: curlimages/curl:latest
+      image: curlimages/curl:8.11.1
       imagePullPolicy: IfNotPresent
       command: ["/bin/sh", "-c", "sleep infinity"]
       securityContext:

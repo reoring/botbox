@@ -232,7 +232,7 @@ impl ResolvesServerCert for HttpsInterceptionCertResolver {
             Err(_reason) => {
                 self.metrics
                     .https_interception_cert_issued_total
-                    .with_label_values(&["skipped_invalid"])
+                    .with_label_values(&["denied"])
                     .inc();
                 return None;
             }
@@ -244,7 +244,7 @@ impl ResolvesServerCert for HttpsInterceptionCertResolver {
             if matches!(decision, Decision::Deny) {
                 self.metrics
                     .https_interception_cert_issued_total
-                    .with_label_values(&["skipped_disallowed"])
+                    .with_label_values(&["denied"])
                     .inc();
                 return None;
             }
@@ -269,12 +269,16 @@ impl ResolvesServerCert for HttpsInterceptionCertResolver {
                 self.cache.insert(hostname, key.clone());
                 self.metrics
                     .https_interception_cert_issued_total
-                    .with_label_values(&["issued_allow"])
+                    .with_label_values(&["issued"])
                     .inc();
                 Some(key)
             }
             Err(e) => {
                 error!(error = %e, "failed to issue HTTPS interception leaf certificate");
+                self.metrics
+                    .https_interception_cert_error_total
+                    .with_label_values(&["signing_failed"])
+                    .inc();
                 None
             }
         }

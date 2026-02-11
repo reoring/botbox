@@ -27,7 +27,7 @@ FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=builder /app/target/release/botbox /botbox
 COPY config.yaml /etc/botbox/config.yaml
 
-EXPOSE 8080 9090
+EXPOSE 8080 8443 9090
 
 # Kubernetes health probes:
 #   readinessProbe:
