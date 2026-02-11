@@ -1,0 +1,212 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mitm-test
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: botbox-secrets
+  namespace: mitm-test
+type: Opaque
+stringData:
+  openai-api-key: "REPLACE-ME-NOT-A-REAL-KEY"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: botbox-config
+  namespace: mitm-test
+data:
+  config.yaml: |
+    listen_addr: "127.0.0.1"
+    listen_port: 8080
+    metrics_port: 9090
+    secrets_dir: "/var/run/secrets/botbox"
+    max_connections: 1024
+
+    egress_policy:
+      default_action: deny
+      rules:
+        - host: api.openai.com
+          action: allow
+          header_rewrites:
+            - name: Authorization
+              value: "Bearer {value}"
+              secret_ref: openai-api-key
+
+    mitm:
+      enabled: true
+      listen_addr: "127.0.0.1"
+      listen_port: 8443
+      ca_cert_path: "/etc/botbox/mitm/ca.crt"
+      ca_key_path: "/etc/botbox/mitm/ca.key"
+      enforce_sni_host_match: true
+      deny_handshake_on_disallowed_sni: false
+      cert_ttl_seconds: 86400
+      cert_cache_size: 1024
+      cert_cache_ttl_seconds: 3600
+      handshake_timeout_ms: 5000
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mitm-test
+  namespace: mitm-test
+spec:
+  restartPolicy: Never
+  initContainers:
+    - name: ca-init
+      image: alpine:3.20
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          apk add --no-cache openssl >/dev/null
+          mkdir -p /ca
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out /ca/ca.key
+          openssl req -x509 -new -key /ca/ca.key -sha256 -days 7 \
+            -subj "/CN=botbox-pod-ca" -out /ca/ca.crt
+          chown 1337:1337 /ca/ca.key /ca/ca.crt
+          chmod 0400 /ca/ca.key
+          chmod 0444 /ca/ca.crt
+      volumeMounts:
+        - name: botbox-ca
+          mountPath: /ca
+
+    - name: iptables-init
+      image: botbox-iptables-init:test
+      imagePullPolicy: Never
+      env:
+        - name: BOTBOX_REDIRECT_FROM_PORT
+          value: "443"
+        - name: BOTBOX_PROXY_PORT
+          value: "8443"
+      securityContext:
+        capabilities:
+          add: [NET_ADMIN]
+        runAsUser: 0
+        runAsNonRoot: false
+
+    - name: botbox
+      image: botbox:test
+      imagePullPolicy: Never
+      restartPolicy: Always
+      args:
+        - "--config"
+        - "/etc/botbox/config.yaml"
+      securityContext:
+        runAsUser: 1337
+        runAsNonRoot: true
+      ports:
+        - containerPort: 8080
+          name: proxy
+        - containerPort: 8443
+          name: mitm
+        - containerPort: 9090
+          name: metrics
+      readinessProbe:
+        httpGet:
+          path: /healthz
+          port: 9090
+        initialDelaySeconds: 1
+        periodSeconds: 2
+      volumeMounts:
+        - name: secrets
+          mountPath: /var/run/secrets/botbox
+          readOnly: true
+        - name: config
+          mountPath: /etc/botbox
+          readOnly: true
+        - name: botbox-ca
+          mountPath: /etc/botbox/mitm
+          readOnly: true
+
+  containers:
+    - name: curl-client
+      image: curlimages/curl:8.11.1
+      env:
+        - name: CURL_CA_BUNDLE
+          value: /etc/botbox-ca/ca.crt
+      securityContext:
+        runAsUser: 1000
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          echo "Waiting for botbox readiness..."
+          ready=0
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:9090/healthz >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "readiness check failed"
+            exit 1
+          fi
+
+          echo "--- MITM positive path (expect upstream reachability, often 401 with dummy key) ---"
+          code="$(curl -sS -o /tmp/openai.out -w '%{http_code}' https://api.openai.com/v1/models || true)"
+          echo "MITM_OPENAI_CODE=${code}"
+          cat /tmp/openai.out || true
+          if [ "${code}" = "000" ]; then
+            echo "openai request timed out or could not connect"
+            exit 1
+          fi
+
+          echo "--- MITM negative allowlist path (expect deny) ---"
+          deny_code="$(curl -sS -o /tmp/deny.out -w '%{http_code}' https://example.com/ -m 8 || true)"
+          echo "MITM_DENY_CODE=${deny_code}"
+          if [ "${deny_code}" != "403" ]; then
+            echo "expected deny code 403 for non-allowlisted host"
+            cat /tmp/deny.out || true
+            exit 1
+          fi
+
+          echo "--- Direct bypass checks ---"
+          echo "TCP/443 direct probe"
+          tcp_code="$(curl -sS -o /tmp/tcp.out -w '%{http_code}' --connect-timeout 2 -m 6 https://cloudflare.com/ || true)"
+          echo "MITM_TCP443_CODE=${tcp_code}"
+          if [ "${tcp_code}" != "403" ] && [ "${tcp_code}" != "000" ]; then
+            echo "unexpected TCP/443 probe result"
+            cat /tmp/tcp.out || true
+            exit 1
+          fi
+
+          echo "UDP/443 direct probe (HTTP/3 if available)"
+          if curl --help all 2>/dev/null | grep -q -- '--http3'; then
+            set +e
+            curl -sS --http3 --connect-timeout 2 -m 6 https://cloudflare-quic.com/ >/tmp/udp.out 2>&1
+            udp_rc=$?
+            set -e
+            echo "MITM_UDP443_RC=${udp_rc}"
+            if [ "${udp_rc}" -eq 0 ]; then
+              echo "expected UDP/443 probe to fail"
+              cat /tmp/udp.out || true
+              exit 1
+            fi
+          else
+            echo "MITM_HTTP3_UNSUPPORTED=1"
+          fi
+      volumeMounts:
+        - name: botbox-ca
+          mountPath: /etc/botbox-ca
+          readOnly: true
+
+  volumes:
+    - name: secrets
+      secret:
+        secretName: botbox-secrets
+    - name: config
+      configMap:
+        name: botbox-config
+    - name: botbox-ca
+      emptyDir: {}

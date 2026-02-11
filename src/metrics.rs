@@ -2,7 +2,7 @@ use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::{Request, Response};
 use prometheus::{
-    Encoder, HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry, TextEncoder,
+    Encoder, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, Opts, Registry, TextEncoder,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -14,6 +14,11 @@ pub struct Metrics {
     pub header_rewrites_total: IntCounterVec,
     pub upstream_errors_total: IntCounterVec,
     pub request_duration_seconds: HistogramVec,
+    // MITM metrics
+    pub tls_handshakes_total: IntCounterVec,
+    pub mitm_cert_issued_total: IntCounterVec,
+    pub mitm_cert_cache_total: IntCounterVec,
+    pub mitm_host_mismatch_total: IntCounter,
 }
 
 impl Metrics {
@@ -53,6 +58,36 @@ impl Metrics {
         )
         .unwrap();
 
+        let tls_handshakes_total = IntCounterVec::new(
+            Opts::new("botbox_tls_handshakes_total", "Total MITM TLS handshakes"),
+            &["result"],
+        )
+        .unwrap();
+
+        let mitm_cert_issued_total = IntCounterVec::new(
+            Opts::new(
+                "botbox_mitm_cert_issued_total",
+                "Total MITM certificates issued",
+            ),
+            &["decision"],
+        )
+        .unwrap();
+
+        let mitm_cert_cache_total = IntCounterVec::new(
+            Opts::new(
+                "botbox_mitm_cert_cache_total",
+                "Total MITM cert cache operations",
+            ),
+            &["result"],
+        )
+        .unwrap();
+
+        let mitm_host_mismatch_total = IntCounter::new(
+            "botbox_mitm_host_mismatch_total",
+            "Total MITM SNI/Host mismatches",
+        )
+        .unwrap();
+
         registry.register(Box::new(requests_total.clone())).unwrap();
         registry
             .register(Box::new(header_rewrites_total.clone()))
@@ -63,6 +98,18 @@ impl Metrics {
         registry
             .register(Box::new(request_duration_seconds.clone()))
             .unwrap();
+        registry
+            .register(Box::new(tls_handshakes_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(mitm_cert_issued_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(mitm_cert_cache_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(mitm_host_mismatch_total.clone()))
+            .unwrap();
 
         Metrics {
             registry: Arc::new(registry),
@@ -70,6 +117,10 @@ impl Metrics {
             header_rewrites_total,
             upstream_errors_total,
             request_duration_seconds,
+            tls_handshakes_total,
+            mitm_cert_issued_total,
+            mitm_cert_cache_total,
+            mitm_host_mismatch_total,
         }
     }
 }

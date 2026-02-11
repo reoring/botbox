@@ -21,6 +21,21 @@ Notes:
 - These tests require Pod-level iptables (`CAP_NET_ADMIN`) to be permitted.
 - The test pod reaches `httpbin.org` over the public internet.
 
+## Automated Execution (kind E2E)
+
+For an automated acceptance run (image build + kind image load + non-MITM E2E + MITM E2E), use:
+
+```bash
+tests/e2e/run-kind-acceptance.sh
+```
+
+Useful environment variables:
+
+- `KIND_CLUSTER_NAME` (default: `kind`)
+- `KUBECTL_CONTEXT` (default: `kind-${KIND_CLUSTER_NAME}`)
+- `CREATE_KIND_CLUSTER=1` to auto-create the cluster when missing
+- `SKIP_IMAGE_BUILD=1` to reuse already-built `botbox:test` images
+
 ## Environment Setup (kind)
 
 1. Create a cluster:

@@ -39,3 +39,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
+
+  kind-acceptance:
+    name: Kind Acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: kind
+      - name: Run acceptance tests on kind
+        run: tests/e2e/run-kind-acceptance.sh

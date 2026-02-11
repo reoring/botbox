@@ -183,6 +183,62 @@ async fn test_allowed_host_without_rewrite_forwards() {
 }
 
 #[tokio::test]
+async fn test_non_mitm_http_path_regression_allow_and_deny() {
+    // Regression guard: existing non-MITM HTTP path should keep allow/deny semantics.
+    let mock_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/smoke"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&mock_server)
+        .await;
+
+    let mock_addr = mock_server.address();
+    let allowed_host = format!("127.0.0.1:{}", mock_addr.port());
+
+    let ctx = TestProxy::start(
+        &[TestRule {
+            host: allowed_host.clone(),
+            header_rewrites: vec![],
+            allowed_ports: None,
+        }],
+        None,
+    )
+    .await;
+
+    // Allowed host should not be denied (it may still upstream-fail due TLS mismatch in test harness).
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(ctx.proxy_addr)
+        .await
+        .unwrap();
+    let allowed_req = format!(
+        "GET http://{}/smoke HTTP/1.1\r\nHost: {}\r\n\r\n",
+        allowed_host, allowed_host
+    );
+    stream.write_all(allowed_req.as_bytes()).await.unwrap();
+
+    let mut buf = vec![0u8; 4096];
+    let n = stream.read(&mut buf).await.unwrap();
+    let allowed_resp = String::from_utf8_lossy(&buf[..n]);
+    assert!(
+        !allowed_resp.contains("403"),
+        "allowed host unexpectedly denied: {}",
+        allowed_resp
+    );
+
+    // Unknown host should still be denied.
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::http(format!("http://{}", ctx.proxy_addr)).unwrap())
+        .build()
+        .unwrap();
+    let denied = client
+        .get("http://definitely-not-allowlisted.example/path")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 403);
+}
+
+#[tokio::test]
 async fn test_missing_secret_returns_500() {
     let ctx = TestProxy::start(
         &[TestRule {

@@ -4,6 +4,7 @@ pub mod error;
 pub mod header_rewrite;
 pub mod logging;
 pub mod metrics;
+pub mod mitm;
 pub mod proxy;
 pub mod secrets;
 pub mod tls;

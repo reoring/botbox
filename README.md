@@ -138,16 +138,20 @@ containers:
       runAsUser: 1000             # must NOT be 1337 (BotBox UID) or iptables owner-match can be bypassed
 ```
 
-### 4. Run the E2E test
+### 4. Run acceptance tests on kind (automated)
 
 ```bash
-kubectl apply -f tests/e2e/manifests/egress-test.yaml
-kubectl -n egress-test wait --for=jsonpath='{.status.phase}'=Succeeded pod/egress-test --timeout=120s
-kubectl -n egress-test logs egress-test -c curl-client
-kubectl delete namespace egress-test
+tests/e2e/run-kind-acceptance.sh
 ```
 
-### 5. Run unit tests
+### 5. Run individual E2E tests (optional)
+
+```bash
+tests/e2e/run-egress-test.sh
+tests/e2e/run-mitm-test.sh
+```
+
+### 6. Run unit tests
 
 ```bash
 cargo test

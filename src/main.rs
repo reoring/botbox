@@ -2,6 +2,7 @@ use anyhow::Result;
 use botbox::allowlist::Allowlist;
 use botbox::config::Config;
 use botbox::metrics::{handle_metrics_request, Metrics};
+use botbox::mitm;
 use botbox::proxy::{ProxyBody, ProxyHandler};
 use botbox::{logging, secrets, tls};
 use clap::Parser;
@@ -110,11 +111,14 @@ async fn main() -> Result<()> {
     // Create proxy handler
     let handler = Arc::new(ProxyHandler::new(
         connector,
-        allowlist,
+        allowlist.clone(),
         secret_store,
         metrics.clone(),
         std::time::Duration::from_secs(30),
     ));
+
+    // Shared shutdown channel for metrics + MITM listeners
+    let (shutdown_tx, _) = tokio::sync::watch::channel(());
 
     // Start metrics server
     let metrics_addr: SocketAddr = format!("127.0.0.1:{}", config.metrics_port())
@@ -122,7 +126,7 @@ async fn main() -> Result<()> {
         .unwrap();
     let metrics_clone = metrics.clone();
     let ready_clone = ready.clone();
-    let (metrics_shutdown_tx, metrics_shutdown_rx) = tokio::sync::watch::channel(());
+    let metrics_shutdown_rx = shutdown_tx.subscribe();
     let metrics_handle = tokio::spawn(async move {
         run_metrics_server(
             metrics_addr,
@@ -132,6 +136,59 @@ async fn main() -> Result<()> {
         )
         .await;
     });
+
+    // Shared connection semaphore (HTTP proxy + MITM share the same pool)
+    let semaphore = Arc::new(Semaphore::new(config.max_connections() as usize));
+
+    // MITM TLS listener (if enabled)
+    let mitm_handle = if let Some(ref mitm_config) = config.mitm {
+        if mitm_config.enabled {
+            info!("MITM mode enabled, loading CA material");
+            let ca = mitm::MitmCa::load(&mitm_config.ca_cert_path, &mitm_config.ca_key_path)?;
+            let ca = Arc::new(ca);
+
+            let resolver = Arc::new(mitm::MitmCertResolver::new(
+                ca,
+                mitm_config,
+                allowlist,
+                metrics.clone(),
+            ));
+            let tls_config = mitm::build_mitm_server_config(resolver);
+
+            let mitm_addr: SocketAddr = format!(
+                "{}:{}",
+                mitm_config.listen_addr(),
+                mitm_config.listen_port()
+            )
+            .parse()
+            .unwrap();
+            info!(addr = %mitm_addr, "starting MITM TLS listener");
+            let mitm_listener = TcpListener::bind(mitm_addr).await?;
+
+            let mitm_handler = handler.clone();
+            let mitm_metrics = metrics.clone();
+            let mitm_semaphore = semaphore.clone();
+            let mitm_shutdown_rx = shutdown_tx.subscribe();
+            let mitm_cfg = mitm_config.clone();
+
+            Some(tokio::spawn(async move {
+                mitm::run_mitm_listener(
+                    mitm_listener,
+                    tls_config,
+                    mitm_handler,
+                    mitm_cfg,
+                    mitm_metrics,
+                    mitm_semaphore,
+                    mitm_shutdown_rx,
+                )
+                .await;
+            }))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Start proxy server
     let proxy_addr: SocketAddr = format!("{}:{}", config.listen_addr(), config.listen_port())
@@ -158,7 +215,6 @@ async fn main() -> Result<()> {
     tokio::pin!(shutdown);
 
     let mut connections = tokio::task::JoinSet::new();
-    let semaphore = Arc::new(Semaphore::new(config.max_connections() as usize));
 
     loop {
         tokio::select! {
@@ -250,10 +306,15 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Signal metrics server to shut down
-    drop(metrics_shutdown_tx);
+    // Signal metrics + MITM servers to shut down
+    drop(shutdown_tx);
     info!("waiting for metrics server to stop");
     let _ = metrics_handle.await;
+
+    if let Some(handle) = mitm_handle {
+        info!("waiting for MITM listener to stop");
+        let _ = handle.await;
+    }
 
     info!("proxy server stopped");
     Ok(())

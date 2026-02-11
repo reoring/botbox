@@ -12,6 +12,8 @@ set -eu
 PROXY_UID="${BOTBOX_UID:-1337}"
 PROXY_PORT="${BOTBOX_PROXY_PORT:-8080}"
 REDIRECT_FROM_PORT="${BOTBOX_REDIRECT_FROM_PORT:-80}"
+ENABLE_MITM="${BOTBOX_ENABLE_MITM:-0}"
+MITM_PORT="${BOTBOX_MITM_PORT:-8443}"
 
 NAT_CHAIN="${BOTBOX_NAT_CHAIN:-EGRESS_REDIRECT}"
 FILTER_CHAIN="${BOTBOX_FILTER_CHAIN:-EGRESS_FILTER}"
@@ -25,6 +27,17 @@ ipt() {
 ipt_nat() {
   iptables -w "${WAIT_SECONDS}" -t nat "$@"
 }
+
+# Guard: MITM + REDIRECT_FROM_PORT=443 conflict.
+# When both are set, the HTTP redirect rule matches port 443 first and sends
+# traffic to the plain-HTTP proxy, making the MITM REDIRECT rule unreachable.
+if [ "${ENABLE_MITM}" = "1" ] && [ "${REDIRECT_FROM_PORT}" = "443" ]; then
+  echo "ERROR: BOTBOX_ENABLE_MITM=1 and BOTBOX_REDIRECT_FROM_PORT=443 conflict." >&2
+  echo "  Port 443 traffic would be redirected to the HTTP proxy (port ${PROXY_PORT})" >&2
+  echo "  instead of the MITM listener (port ${MITM_PORT})." >&2
+  echo "  Use BOTBOX_REDIRECT_FROM_PORT=80 (default) with BOTBOX_ENABLE_MITM=1." >&2
+  exit 1
+fi
 
 echo "Installing BotBox iptables rules..."
 echo "  proxy_uid=${PROXY_UID} proxy_port=${PROXY_PORT} redirect_from_port=${REDIRECT_FROM_PORT}"
@@ -41,6 +54,12 @@ while ipt_nat -D OUTPUT -p tcp -j "${NAT_CHAIN}" 2>/dev/null; do :; done
 ipt_nat -A "${NAT_CHAIN}" -o lo -j RETURN
 ipt_nat -A "${NAT_CHAIN}" -m owner --uid-owner "${PROXY_UID}" -j RETURN
 ipt_nat -A "${NAT_CHAIN}" -p tcp --dport "${REDIRECT_FROM_PORT}" -j REDIRECT --to-port "${PROXY_PORT}"
+
+# MITM: redirect outbound HTTPS (port 443) to MITM listener
+if [ "${ENABLE_MITM}" = "1" ]; then
+  echo "  mitm_port=${MITM_PORT} (MITM enabled)"
+  ipt_nat -A "${NAT_CHAIN}" -p tcp --dport 443 -j REDIRECT --to-port "${MITM_PORT}"
+fi
 
 ipt_nat -I OUTPUT 1 -p tcp -j "${NAT_CHAIN}"
 
