@@ -32,11 +32,11 @@ build_botbox_image() {
     return 0
   fi
 
-  echo "Primary Dockerfile build failed; retrying with rust:1.85-bookworm fallback..."
+  echo "Primary Dockerfile build failed; retrying with rust:1.88-bookworm fallback..."
   local tmp_dockerfile
   tmp_dockerfile="$(mktemp)"
   cat > "${tmp_dockerfile}" <<'EOF'
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
