@@ -1,0 +1,138 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: botbox-https-interception-demo
+  namespace: botbox-https-interception
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: botbox-https-interception-demo
+  template:
+    metadata:
+      labels:
+        app: botbox-https-interception-demo
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+
+      initContainers:
+        - name: ca-init
+          image: alpine/openssl:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              mkdir -p /ca
+              openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out /ca/ca.key
+              openssl req -x509 -new -key /ca/ca.key -sha256 -days 7 -subj "/CN=botbox-pod-ca" -out /ca/ca.crt
+              chown 1337:1337 /ca/ca.key /ca/ca.crt
+              chmod 0400 /ca/ca.key
+              chmod 0444 /ca/ca.crt
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: botbox-ca
+              mountPath: /ca
+
+        - name: iptables-init
+          image: botbox-iptables-init:test
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BOTBOX_UID
+              value: "1337"
+            - name: BOTBOX_PROXY_PORT
+              value: "8080"
+            - name: BOTBOX_ENABLE_HTTPS_INTERCEPTION
+              value: "1"
+            - name: BOTBOX_HTTPS_INTERCEPTION_PORT
+              value: "8443"
+            - name: BOTBOX_ENABLE_IPV6
+              value: "0"
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              add: ["NET_ADMIN"]
+
+      containers:
+        - name: botbox
+          image: botbox:test
+          imagePullPolicy: IfNotPresent
+          args: ["--config", "/etc/botbox/config.yaml"]
+          securityContext:
+            runAsUser: 1337
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          ports:
+            - containerPort: 8080
+              name: proxy
+            - containerPort: 8443
+              name: https-intercept
+            - containerPort: 9090
+              name: metrics
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          volumeMounts:
+            - name: secrets
+              mountPath: /var/run/secrets/botbox
+              readOnly: true
+            - name: config
+              mountPath: /etc/botbox
+              readOnly: true
+            - name: botbox-ca
+              mountPath: /etc/botbox/https_interception
+              readOnly: true
+
+        - name: client
+          image: curlimages/curl:8.11.1
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c", "sleep infinity"]
+          env:
+            - name: CURL_CA_BUNDLE
+              value: /etc/botbox-ca/ca.crt
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - curl -sf --connect-timeout 1 --max-time 1 http://127.0.0.1:9090/healthz >/dev/null
+            initialDelaySeconds: 1
+            periodSeconds: 2
+            timeoutSeconds: 1
+          securityContext:
+            runAsUser: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          volumeMounts:
+            - name: botbox-ca
+              mountPath: /etc/botbox-ca/ca.crt
+              subPath: ca.crt
+              readOnly: true
+
+      volumes:
+        - name: secrets
+          secret:
+            secretName: botbox-secrets
+        - name: config
+          configMap:
+            name: botbox-config
+        - name: botbox-ca
+          emptyDir: {}

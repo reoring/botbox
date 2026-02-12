@@ -4,6 +4,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.93.0-orange.svg)](https://www.rust-lang.org/)
 
+English | [日本語](README.ja.md)
+
 <p align="center">
   <img src="docs/botbox.png" alt="BotBox" width="600">
 </p>
@@ -128,6 +130,8 @@ Environment variable overrides:
 
 > **Note:** HTTPS interception requires **both** the config file setting (`https_interception.enabled: true`) and the iptables environment variable (`BOTBOX_ENABLE_HTTPS_INTERCEPTION=1`). The config tells BotBox to start the TLS listener; the environment variable tells the init container to install the NAT redirect rule.
 
+> **Note:** When `BOTBOX_ENABLE_HTTPS_INTERCEPTION=1`, keep `BOTBOX_REDIRECT_FROM_PORT=80` (the default). Setting `BOTBOX_REDIRECT_FROM_PORT=443` conflicts with the HTTPS interception redirect; the init script fails fast to avoid silently routing HTTPS into the plain HTTP listener.
+
 > **Note:** `BOTBOX_ENABLE_IPV6` is a **required** environment variable for the iptables init container (no default). Set to `1` for dual-stack environments (mirrors all rules via ip6tables) or `0` for IPv4-only. The script exits with an error if this variable is not set.
 
 ### iptables Rules for HTTPS Interception
@@ -151,6 +155,27 @@ The app container must trust the BotBox CA certificate. Mount the CA cert (NOT t
 | Go (net/http) | `SSL_CERT_FILE=/etc/botbox/https_interception/ca.crt` |
 
 **Security note:** The CA **private key** must NOT be mounted into app containers. Only the CA certificate (public) should be shared. The private key must be in a separate volume accessible only to the BotBox sidecar.
+
+### Kubernetes gotchas (from the example manifests)
+
+- Loopback-only listeners vs probes: BotBox's metrics server binds to `127.0.0.1`, and `https_interception.listen_addr` is required to be loopback. Kubernetes `httpGet` probes hit the Pod IP, so they will time out if you point them at `:9090/healthz` (or `:8443`) while those listeners are bound to loopback.
+- Prefer an `exec` probe in any container that has a HTTP client (your app container, or a tiny curl sidecar) and probe `http://127.0.0.1:9090/healthz` from inside the Pod network namespace. The default BotBox image is distroless, so it does not include `/bin/sh` or `curl`.
+
+Example `exec` readiness probe:
+
+```yaml
+readinessProbe:
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - curl -sf --connect-timeout 1 --max-time 1 http://127.0.0.1:9090/healthz >/dev/null
+  initialDelaySeconds: 1
+  periodSeconds: 2
+  timeoutSeconds: 1
+```
+
+- Ephemeral CA for dev: the example generates a throwaway CA keypair in an initContainer into an `emptyDir`. This is convenient for development, but for production you probably want a stable CA stored in a Kubernetes Secret.
 
 ## Quickstart
 
@@ -213,6 +238,14 @@ containers:
     securityContext:
       runAsNonRoot: true
       runAsUser: 1000             # must NOT be 1337 (BotBox UID) or iptables owner-match can be bypassed
+```
+
+Or try the ready-to-apply Kubernetes example (HTTPS interception enabled):
+
+```bash
+kubectl apply -k examples/https_interception
+kubectl -n botbox-https-interception rollout status deploy/botbox-https-interception-demo
+kubectl -n botbox-https-interception exec -it deploy/botbox-https-interception-demo -c client -- sh
 ```
 
 ### 4. Run acceptance tests on kind (automated)
