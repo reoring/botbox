@@ -2,7 +2,7 @@ use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::{Request, Response};
 use prometheus::{
-    Encoder, HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry, TextEncoder,
+    Encoder, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, Opts, Registry, TextEncoder,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -14,6 +14,12 @@ pub struct Metrics {
     pub header_rewrites_total: IntCounterVec,
     pub upstream_errors_total: IntCounterVec,
     pub request_duration_seconds: HistogramVec,
+    // HTTPS interception metrics
+    pub tls_handshakes_total: IntCounterVec,
+    pub https_interception_cert_issued_total: IntCounterVec,
+    pub https_interception_cert_error_total: IntCounterVec,
+    pub https_interception_cert_cache_total: IntCounterVec,
+    pub https_interception_host_mismatch_total: IntCounter,
 }
 
 impl Metrics {
@@ -53,6 +59,48 @@ impl Metrics {
         )
         .unwrap();
 
+        let tls_handshakes_total = IntCounterVec::new(
+            Opts::new(
+                "botbox_tls_handshakes_total",
+                "Total HTTPS interception TLS handshakes",
+            ),
+            &["result"],
+        )
+        .unwrap();
+
+        let https_interception_cert_issued_total = IntCounterVec::new(
+            Opts::new(
+                "botbox_https_interception_cert_issued_total",
+                "Total HTTPS interception certificates issued",
+            ),
+            &["result"],
+        )
+        .unwrap();
+
+        let https_interception_cert_error_total = IntCounterVec::new(
+            Opts::new(
+                "botbox_https_interception_cert_error_total",
+                "Total HTTPS interception certificate generation errors",
+            ),
+            &["error_type"],
+        )
+        .unwrap();
+
+        let https_interception_cert_cache_total = IntCounterVec::new(
+            Opts::new(
+                "botbox_https_interception_cert_cache_total",
+                "Total HTTPS interception cert cache operations",
+            ),
+            &["result"],
+        )
+        .unwrap();
+
+        let https_interception_host_mismatch_total = IntCounter::new(
+            "botbox_https_interception_host_mismatch_total",
+            "Total HTTPS interception SNI/Host mismatches",
+        )
+        .unwrap();
+
         registry.register(Box::new(requests_total.clone())).unwrap();
         registry
             .register(Box::new(header_rewrites_total.clone()))
@@ -63,6 +111,21 @@ impl Metrics {
         registry
             .register(Box::new(request_duration_seconds.clone()))
             .unwrap();
+        registry
+            .register(Box::new(tls_handshakes_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(https_interception_cert_issued_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(https_interception_cert_error_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(https_interception_cert_cache_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(https_interception_host_mismatch_total.clone()))
+            .unwrap();
 
         Metrics {
             registry: Arc::new(registry),
@@ -70,6 +133,11 @@ impl Metrics {
             header_rewrites_total,
             upstream_errors_total,
             request_duration_seconds,
+            tls_handshakes_total,
+            https_interception_cert_issued_total,
+            https_interception_cert_error_total,
+            https_interception_cert_cache_total,
+            https_interception_host_mismatch_total,
         }
     }
 }

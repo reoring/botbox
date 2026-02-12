@@ -1,6 +1,7 @@
 use anyhow::Result;
 use botbox::allowlist::Allowlist;
 use botbox::config::Config;
+use botbox::https_interception;
 use botbox::metrics::{handle_metrics_request, Metrics};
 use botbox::proxy::{ProxyBody, ProxyHandler};
 use botbox::{logging, secrets, tls};
@@ -110,11 +111,14 @@ async fn main() -> Result<()> {
     // Create proxy handler
     let handler = Arc::new(ProxyHandler::new(
         connector,
-        allowlist,
+        allowlist.clone(),
         secret_store,
         metrics.clone(),
         std::time::Duration::from_secs(30),
     ));
+
+    // Shared shutdown channel for metrics + HTTPS interception listeners
+    let (shutdown_tx, _) = tokio::sync::watch::channel(());
 
     // Start metrics server
     let metrics_addr: SocketAddr = format!("127.0.0.1:{}", config.metrics_port())
@@ -122,7 +126,7 @@ async fn main() -> Result<()> {
         .unwrap();
     let metrics_clone = metrics.clone();
     let ready_clone = ready.clone();
-    let (metrics_shutdown_tx, metrics_shutdown_rx) = tokio::sync::watch::channel(());
+    let metrics_shutdown_rx = shutdown_tx.subscribe();
     let metrics_handle = tokio::spawn(async move {
         run_metrics_server(
             metrics_addr,
@@ -132,6 +136,56 @@ async fn main() -> Result<()> {
         )
         .await;
     });
+
+    // Shared connection semaphore (HTTP proxy + HTTPS interception share the same pool)
+    let semaphore = Arc::new(Semaphore::new(config.max_connections() as usize));
+
+    // HTTPS interception TLS listener (if enabled)
+    let https_interception_handle = if let Some(ref cfg) = config.https_interception {
+        if cfg.enabled {
+            info!("HTTPS interception mode enabled, loading CA material");
+            let ca =
+                https_interception::HttpsInterceptionCa::load(&cfg.ca_cert_path, &cfg.ca_key_path)?;
+            let ca = Arc::new(ca);
+
+            let resolver = Arc::new(https_interception::HttpsInterceptionCertResolver::new(
+                ca,
+                cfg,
+                allowlist,
+                metrics.clone(),
+            ));
+            let tls_config = https_interception::build_https_interception_server_config(resolver);
+
+            let addr: SocketAddr = format!("{}:{}", cfg.listen_addr(), cfg.listen_port())
+                .parse()
+                .unwrap();
+            info!(addr = %addr, "starting HTTPS interception TLS listener");
+            let listener = TcpListener::bind(addr).await?;
+
+            let handler = handler.clone();
+            let metrics = metrics.clone();
+            let semaphore = semaphore.clone();
+            let shutdown_rx = shutdown_tx.subscribe();
+            let cfg = cfg.clone();
+
+            Some(tokio::spawn(async move {
+                https_interception::run_https_interception_listener(
+                    listener,
+                    tls_config,
+                    handler,
+                    cfg,
+                    metrics,
+                    semaphore,
+                    shutdown_rx,
+                )
+                .await;
+            }))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Start proxy server
     let proxy_addr: SocketAddr = format!("{}:{}", config.listen_addr(), config.listen_port())
@@ -158,7 +212,6 @@ async fn main() -> Result<()> {
     tokio::pin!(shutdown);
 
     let mut connections = tokio::task::JoinSet::new();
-    let semaphore = Arc::new(Semaphore::new(config.max_connections() as usize));
 
     loop {
         tokio::select! {
@@ -250,10 +303,15 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Signal metrics server to shut down
-    drop(metrics_shutdown_tx);
+    // Signal metrics + HTTPS interception servers to shut down
+    drop(shutdown_tx);
     info!("waiting for metrics server to stop");
     let _ = metrics_handle.await;
+
+    if let Some(handle) = https_interception_handle {
+        info!("waiting for HTTPS interception listener to stop");
+        let _ = handle.await;
+    }
 
     info!("proxy server stopped");
     Ok(())

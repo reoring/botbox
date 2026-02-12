@@ -2,6 +2,7 @@ pub mod allowlist;
 pub mod config;
 pub mod error;
 pub mod header_rewrite;
+pub mod https_interception;
 pub mod logging;
 pub mod metrics;
 pub mod proxy;

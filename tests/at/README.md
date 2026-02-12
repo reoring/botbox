@@ -20,6 +20,22 @@ The tests validate the end-to-end behavior in a Kubernetes cluster (kind recomme
 Notes:
 - These tests require Pod-level iptables (`CAP_NET_ADMIN`) to be permitted.
 - The test pod reaches `httpbin.org` over the public internet.
+- `BOTBOX_ENABLE_IPV6` is required by the iptables init script. The AT manifest sets it to `0` (kind clusters typically lack ip6table_nat). For production dual-stack environments, set it to `1`.
+
+## Automated Execution (kind E2E)
+
+For an automated acceptance run (image build + kind image load + HTTP-mode E2E + HTTPS interception E2E), use:
+
+```bash
+tests/e2e/run-kind-acceptance.sh
+```
+
+Useful environment variables:
+
+- `KIND_CLUSTER_NAME` (default: `kind`)
+- `KUBECTL_CONTEXT` (default: `kind-${KIND_CLUSTER_NAME}`)
+- `CREATE_KIND_CLUSTER=1` to auto-create the cluster when missing
+- `SKIP_IMAGE_BUILD=1` to reuse already-built `botbox:test` images
 
 ## Environment Setup (kind)
 
