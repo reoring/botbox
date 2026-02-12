@@ -282,3 +282,4 @@ cargo test
 
 - `docs/architecture.md` — モジュール構成、リクエストフロー、iptables ルール、設定リファレンス
 - `docs/security.md` — 脅威モデル、対策、ハードニング、残存リスク
+- [BotBox vs Deno Sandbox](docs/vs-deno-sandbox.ja.md) — `allowNet`/`secrets` 比較、許可済み上流（allowlist 済みホスト）経由の残存リスク

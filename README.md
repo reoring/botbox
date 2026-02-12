@@ -280,3 +280,4 @@ cargo test
 
 - [Architecture](docs/architecture.md) — module structure, request flow, iptables rules, configuration reference
 - [Security](docs/security.md) — threat model, controls, hardening checklist, residual risks
+- [BotBox vs Deno Sandbox](docs/vs-deno-sandbox.md) — `allowNet`/`secrets` comparison, allowlisted-upstream risk analysis
