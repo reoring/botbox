@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/reoring/botbox/actions/workflows/ci.yml/badge.svg)](https://github.com/reoring/botbox/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.93.0-orange.svg)](https://www.rust-lang.org/)
 
 <p align="center">
   <img src="docs/botbox.png" alt="BotBox" width="600">
